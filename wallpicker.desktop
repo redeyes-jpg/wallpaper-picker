@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Wallpapers
+GenericName=Wallpaper picker
+Comment=Pick a wallpaper or manage rotation
+Exec=omarchy-shell wallpicker open
+TryExec=omarchy-shell
+Icon=@ICON@
+Terminal=false
+StartupNotify=false
+Categories=Utility;DesktopSettings;
+Keywords=wallpaper;wallpapers;background;omarchy;wallpicker;rotation;
+X-Wallpicker-Managed=true

@@ -1,0 +1,310 @@
+#!/bin/bash
+# wallpicker-cli — config, wallpaper cycling, keybind management, .desktop install.
+set -uo pipefail
+
+CONFIG_FILE="${WALLPICKER_CONFIG:-$HOME/.config/omarchy/wallpicker.json}"
+STATE_DIR="${WALLPICKER_STATE_DIR:-$HOME/.local/state/omarchy/wallpicker}"
+STATE_FILE="$STATE_DIR/rotation.json"
+LUA_FILE="$HOME/.config/hypr/wallpicker.lua"
+HL_FILE="$HOME/.config/hypr/hyprland.lua"
+HL_MARKER="require(\"hypr.wallpicker\") -- wallpicker-managed"
+
+CONFIG_VERSION=1
+
+DEFAULT_CONFIG='{
+  "version": 1,
+  "picturesDir": "~/Pictures",
+  "recursive": false,
+  "columns": 5,
+  "rotationEnabled": false,
+  "rotationIntervalMin": 30,
+  "rotationRandom": true,
+  "keybindOpen": "",
+  "keybindToggleRotation": "",
+  "keybindRotateNow": ""
+}'
+
+die() { echo "wallpicker: $*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- config
+
+ensure_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    local version
+    version=$(jq -r '.version // 0' "$CONFIG_FILE" 2>/dev/null || echo 0)
+    if [[ "$version" != "$CONFIG_VERSION" ]]; then
+      cp -f "$CONFIG_FILE" "$CONFIG_FILE.bak" 2>/dev/null
+      printf '%s\n' "$DEFAULT_CONFIG" > "$CONFIG_FILE"
+    fi
+  else
+    mkdir -p "$(dirname "$CONFIG_FILE")"
+    printf '%s\n' "$DEFAULT_CONFIG" > "$CONFIG_FILE"
+  fi
+}
+
+cfg() {
+  ensure_config
+  jq -r --arg k "$1" --argjson d "$DEFAULT_CONFIG" \
+    'if (.[$k] == null) then $d[$k] else .[$k] end' "$CONFIG_FILE"
+}
+
+NUMERIC_KEYS=" columns rotationIntervalMin version "
+BOOL_KEYS=" recursive rotationEnabled rotationRandom "
+
+cfg_set() {
+  ensure_config
+  local key=$1 value=$2 tmp
+  if [[ $NUMERIC_KEYS == *" $key "* ]]; then
+    [[ $value =~ ^-?[0-9]+$ ]] || die "$key must be a whole number, got: $value"
+    tmp=$(jq --arg k "$key" --argjson v "$value" '.[$k] = $v' "$CONFIG_FILE")
+  elif [[ $BOOL_KEYS == *" $key "* ]]; then
+    case "$value" in
+      true)  v=true ;;
+      false) v=false ;;
+      *) die "$key must be true or false, got: $value" ;;
+    esac
+    tmp=$(jq --arg k "$key" --argjson v "$v" '.[$k] = $v' "$CONFIG_FILE")
+  else
+    tmp=$(jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$CONFIG_FILE")
+  fi
+  [[ -n $tmp ]] || die "failed to update $key"
+  printf '%s\n' "$tmp" > "$CONFIG_FILE"
+}
+
+# ---------------------------------------------------------------- list
+
+cmd_list() {
+  local pictures_dir depth
+  pictures_dir=$(cfg picturesDir)
+  [[ -n "$pictures_dir" ]] || die "picturesDir is empty"
+  pictures_dir="${pictures_dir/#\~/$HOME}"
+
+  [[ -d "$pictures_dir" ]] || die "directory not found: $pictures_dir"
+
+  depth=1
+  [[ "$(cfg recursive)" == "true" ]] && depth=99
+
+  find "$pictures_dir" -maxdepth "$depth" -type f \
+    \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o \
+       -iname '*.webp' -o -iname '*.bmp' -o -iname '*.gif' -o -iname '*.tiff' \) \
+    2>/dev/null | sort | jq -Rsc 'split("\n") | map(select(length > 0))'
+}
+
+# ---------------------------------------------------------------- apply
+
+cmd_apply() {
+  local path=$1
+  [[ -n "$path" ]] || die "no wallpaper path given"
+  [[ -f "$path" ]] || die "file not found: $path"
+  omarchy theme bg set "$path" >/dev/null 2>&1 \
+    || omarchy-theme-bg-set "$path" >/dev/null 2>&1 \
+    || die "failed to set background"
+  stamp "$path"
+}
+
+# ---------------------------------------------------------------- state
+
+ensure_state() { mkdir -p "$STATE_DIR"; }
+
+stamp() {
+  ensure_state
+  local now_ms
+  now_ms=$(date +%s%3N 2>/dev/null || python3 -c "import time;print(int(time.time()*1000))")
+  if [[ -f "$STATE_FILE" ]]; then
+    # Merge — preserve rotationIndex written by cmd_next.
+    jq --argjson ms "$now_ms" --arg path "${1:-}" \
+      '.lastRotatedMs = $ms | .lastAppliedPath = $path' \
+      "$STATE_FILE" > "$STATE_FILE.tmp" && mv -f "$STATE_FILE.tmp" "$STATE_FILE"
+  else
+    jq -n --argjson ms "$now_ms" --arg path "${1:-}" \
+      '{"lastRotatedMs": $ms, "rotationIndex": 0, "lastAppliedPath": $path}' > "$STATE_FILE"
+  fi
+}
+
+# ---------------------------------------------------------------- next
+
+cmd_next() {
+  local count list_json last_path random index path
+  list_json=$(cmd_list)
+  count=$(jq length <<< "$list_json")
+  [[ "$count" -gt 0 ]] || die "no wallpapers found"
+
+  last_path=""
+  [[ -f "$STATE_FILE" ]] && last_path=$(jq -r '.lastAppliedPath // ""' "$STATE_FILE")
+
+  # Index of the last applied wallpaper, or -1 when it is not in the list.
+  local last_idx
+  last_idx=$(jq --arg p "$last_path" \
+    'to_entries | map(select(.value == $p)) | if length > 0 then .[0].key else -1 end' <<< "$list_json")
+  [[ "$last_idx" =~ ^[0-9]+$ ]] || last_idx=-1
+
+  random=$(cfg rotationRandom)
+  if [[ "$random" == "true" ]]; then
+    # Random, but never the same wallpaper twice in a row.
+    if [[ "$count" -gt 1 ]]; then
+      local candidates idxs=() i
+      candidates=$(jq -r 'to_entries | map(select(.key != '"$last_idx"')) | .[].key' <<< "$list_json")
+      while IFS= read -r i; do idxs+=("$i"); done <<< "$candidates"
+      index=${idxs[$(( RANDOM % ${#idxs[@]} ))]}
+    else
+      index=0
+    fi
+  else
+    # Sequential: next after the last applied, wrapping.
+    if [[ "$last_idx" -ge 0 && "$count" -gt 1 ]]; then
+      index=$(( (last_idx + 1) % count ))
+    else
+      index=$(jq -r '.rotationIndex // 0' "$STATE_FILE" 2>/dev/null || echo 0)
+      index=$(( index % count ))
+      # If that lands on the same image we just applied, advance once.
+      [[ "$index" -eq "$last_idx" && "$count" -gt 1 ]] && index=$(( (index + 1) % count ))
+    fi
+  fi
+
+  ensure_state
+  path=$(jq -r ".[$index]" <<< "$list_json")
+  jq --argjson idx "$index" --arg p "$path" \
+    '.rotationIndex = $idx | .lastAppliedPath = $p' "$STATE_FILE" \
+    > "$STATE_FILE.tmp" && mv -f "$STATE_FILE.tmp" "$STATE_FILE"
+
+  cmd_apply "$path"
+  echo "$path"
+}
+
+# ---------------------------------------------------------------- keybinds
+
+# Top-level statements, same as the user's bindings.lua: Hyprland clears
+# module caches on every reload, so re-requiring re-applies the binds.
+emit_lua() {
+  local bind="$1" unbind="$2"
+  { echo "-- wallpicker-managed (auto-generated, do not edit)"
+    [[ -n "$unbind" ]] && echo -e "$unbind"
+    [[ -n "$bind" ]] && echo -e "$bind"
+  } > "$LUA_FILE"
+  chmod 644 "$LUA_FILE"
+}
+
+apply_keybinds() {
+  ensure_config
+  local open_bind toggle_bind rotate_bind
+  open_bind=$(cfg keybindOpen)
+  toggle_bind=$(cfg keybindToggleRotation)
+  rotate_bind=$(cfg keybindRotateNow)
+
+  if [[ -z "$open_bind" && -z "$toggle_bind" && -z "$rotate_bind" ]]; then
+    clear_keybinds
+    return
+  fi
+
+  local bind="" unbind=""
+  if [[ -n "$open_bind" ]]; then
+    unbind+="hl.unbind(\"$open_bind\")\n"
+    bind+="o.bind(\"$open_bind\", \"Wallpaper picker\", \"omarchy-shell wallpicker open\")\n"
+  fi
+  if [[ -n "$toggle_bind" ]]; then
+    unbind+="hl.unbind(\"$toggle_bind\")\n"
+    bind+="o.bind(\"$toggle_bind\", \"Toggle wallpaper rotation\", \"omarchy-shell wallpicker toggleRotation\")\n"
+  fi
+  if [[ -n "$rotate_bind" ]]; then
+    unbind+="hl.unbind(\"$rotate_bind\")\n"
+    bind+="o.bind(\"$rotate_bind\", \"Rotate wallpaper now\", \"omarchy-shell wallpicker cycleNow\")\n"
+  fi
+
+  emit_lua "$bind" "$unbind"
+
+  # Ensure the require line sits right after bindings.lua is loaded.
+  if ! grep -qF "$HL_MARKER" "$HL_FILE" 2>/dev/null; then
+    sed -i "0,/^require(\"hypr.bindings\")$/s//require(\"hypr.bindings\")\n$HL_MARKER/" "$HL_FILE"
+  fi
+
+  hyprctl reload >/dev/null 2>&1 || true
+}
+
+clear_keybinds() {
+  rm -f "$LUA_FILE"
+  if [[ -f "$HL_FILE" ]] && grep -qF "$HL_MARKER" "$HL_FILE"; then
+    sed -i "/^$HL_MARKER$/d" "$HL_FILE"
+  fi
+  hyprctl reload >/dev/null 2>&1 || true
+}
+
+# ---------------------------------------------------------------- desktop
+
+DESKTOP_MARKER="X-Wallpicker-Managed=true"
+
+desktop_install() {
+  local source_dir=${1:-.}
+  local dest="$HOME/.local/share/applications/wallpicker.desktop"
+  local template="$source_dir/wallpicker.desktop"
+
+  [[ -f "$template" ]] || die "template not found: $template"
+  # Never clobber a user-owned file.
+  if [[ -e "$dest" ]] && ! grep -q "$DESKTOP_MARKER" "$dest" 2>/dev/null; then
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$dest")"
+  local tmp="$dest.wallpicker.new"
+  sed "s|@ICON@|preferences-desktop-wallpaper|" "$template" > "$tmp" || return 0
+  if cmp -s "$tmp" "$dest"; then
+    rm -f "$tmp"
+  else
+    mv -f "$tmp" "$dest"
+  fi
+}
+
+desktop_remove() {
+  local dest="$HOME/.local/share/applications/wallpicker.desktop"
+  [[ -e "$dest" ]] && grep -q "$DESKTOP_MARKER" "$dest" 2>/dev/null && rm -f "$dest"
+}
+
+# ---------------------------------------------------------------- dispatch
+
+case "${1:-help}" in
+  config)
+    shift
+    case "${1:-show}" in
+      show) ensure_config; cat "$CONFIG_FILE" ;;
+      path) echo "$CONFIG_FILE" ;;
+      get)  cfg "${2:?usage: wallpicker config get <key>}" ;;
+      set)  cfg_set "${2:?usage: wallpicker config set <key> <value>}" "${3-}" ;;
+      *)    die "unknown config subcommand: $1" ;;
+    esac
+    ;;
+  list)  cmd_list ;;
+  next)  cmd_next ;;
+  apply) shift; cmd_apply "${1:?usage: wallpicker apply <path>}" ;;
+  keybinds)
+    shift
+    case "${1:-show}" in
+      apply)  apply_keybinds ;;
+      clear)  clear_keybinds ;;
+      show)
+        ensure_config
+        jq '{keybindOpen, keybindToggleRotation, keybindRotateNow}' "$CONFIG_FILE"
+        ;;
+      *) die "unknown keybinds subcommand: $1 (use: apply|clear|show)" ;;
+    esac
+    ;;
+  desktop)
+    shift
+    case "${1:-install}" in
+      install) desktop_install "${2:-.}" ;;
+      remove)  desktop_remove ;;
+      *)       die "unknown desktop subcommand: $1 (use: install|remove)" ;;
+    esac
+    ;;
+  help|-h|--help)
+    cat <<'USAGE'
+wallpicker — Wallpaper picker and rotation for Omarchy
+
+  wallpicker list                    JSON array of image paths in picturesDir
+  wallpicker next                    Cycle to next wallpaper (random or sequential)
+  wallpicker apply <path>            Set a specific wallpaper
+  wallpicker config show|get|set     Read or edit ~/.config/omarchy/wallpicker.json
+  wallpicker keybinds apply|clear    Generate/clear Hyprland keybind lua
+  wallpicker desktop install|remove  Install/remove .desktop launcher entry
+USAGE
+    ;;
+  *) die "unknown command: $1 (try: wallpicker help)" ;;
+esac

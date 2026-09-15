@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "wallpicker.grid",
+  "name": "Wallpaper Picker",
+  "version": "2.0.0",
+  "author": "maiosx",
+  "license": "MIT",
+  "description": "Fullscreen wallpaper picker with timer-based rotation, launched from the app grid.",
+  "kinds": ["overlay", "service"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "WallpaperPicker.qml",
+    "service": "Service.qml"
+  }
+}
