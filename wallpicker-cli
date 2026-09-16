@@ -258,6 +258,183 @@ desktop_remove() {
   [[ -e "$dest" ]] && grep -q "$DESKTOP_MARKER" "$dest" 2>/dev/null && rm -f "$dest"
 }
 
+# ---------------------------------------------------------------- wallhaven config
+
+wallhaven_config_get() {
+  ensure_config
+  local key=$1 base
+  base=$(jq -c '.wallhaven // {}' "$CONFIG_FILE")
+  case "$key" in
+    categories) jq -nr --arg k "$key" --argjson b "$base" --arg d "111" '$b[$k] // $d' ;;
+    purity)     jq -nr --arg k "$key" --argjson b "$base" --arg d "100" '$b[$k] // $d' ;;
+    sorting)    jq -nr --arg k "$key" --argjson b "$base" --arg d "date_added" '$b[$k] // $d' ;;
+    ratios)     jq -nr --arg k "$key" --argjson b "$base" --arg d "16x9" '$b[$k] // $d' ;;
+    atleast)    jq -nr --arg k "$key" --argjson b "$base" --arg d "" '$b[$k] // $d' ;;
+    *)          jq -nr --arg k "$key" --argjson b "$base" '$b[$k] // empty' ;;
+  esac
+}
+
+wallhaven_config_set() {
+  ensure_config
+  local key=$1 value=$2 tmp
+  case "$key" in
+    categories) [[ "$value" =~ ^[0-7]$ ]] || die "wallhaven.categories must be a value from 0 to 7" ;;
+    purity) [[ "$value" =~ ^(100|010|001)$ ]] || die "wallhaven.purity must be 100, 010, or 001" ;;
+    sorting) case "$value" in relevance|random|date_added|views|favorites|toplist) ;; *) die "unknown wallhaven.sorting value: $value" ;; esac ;;
+    ratios) [[ -z "$value" || "$value" =~ ^[0-9]+x[0-9]+(,[0-9]+x[0-9]+)*$ ]] || die "invalid wallhaven.ratios value: $value" ;;
+    atleast) [[ "$value" =~ ^([0-9]+x[0-9]+)?$ ]] || die "invalid wallhaven.atleast value: $value" ;;
+    *) die "unknown wallhaven config key: $key" ;;
+  esac
+  tmp=$(jq --arg k "$key" --arg v "$value" '.wallhaven[$k] = $v' "$CONFIG_FILE") || die "failed to update wallhaven.$key"
+  printf '%s\n' "$tmp" > "$CONFIG_FILE"
+}
+
+# ---------------------------------------------------------------- wallhaven API
+
+wallhaven_request() {
+  local query="${1:-}" page="${2:-1}" categories="${3:-111}" purity="${4:-100}" sorting="${5:-relevance}" ratios="${6-16x9}" atleast="${7-}" api_key="${WALLHAVEN_API_KEY:-}"
+  local -a curl_args=(--silent --show-error --fail-with-body --get "https://wallhaven.cc/api/v1/search"
+    --data-urlencode "page=$page"
+    --data-urlencode "categories=$categories"
+    --data-urlencode "purity=$purity"
+    --data-urlencode "sorting=$sorting")
+  [[ -n "$ratios" ]] && curl_args+=(--data-urlencode "ratios=$ratios")
+  [[ -n "$query" ]] && curl_args+=(--data-urlencode "q=$query")
+  [[ -n "$atleast" ]] && curl_args+=(--data-urlencode "atleast=$atleast")
+  [[ -n "$api_key" ]] && curl_args+=(--data-urlencode "apikey=$api_key")
+  curl "${curl_args[@]}"
+}
+
+wallhaven_search() {
+  local query="${1:-}" page="${2:-1}" categories="${3:-$(wallhaven_config_get categories)}" purity="${4:-$(wallhaven_config_get purity)}" sorting="${5:-$(wallhaven_config_get sorting)}" ratios="${6-$(wallhaven_config_get ratios)}" atleast="${7-$(wallhaven_config_get atleast)}"
+  wallhaven_request "$query" "$page" "$categories" "$purity" "$sorting" "$ratios" "$atleast" | jq -e 'if type == "object" and (.data | type == "array") then . else error("invalid Wallhaven response") end'
+}
+
+wallhaven_photos() {
+  local page="${1:-1}" categories="${2:-$(wallhaven_config_get categories)}" purity="${3:-$(wallhaven_config_get purity)}" sorting="${4:-$(wallhaven_config_get sorting)}" ratios="${5-$(wallhaven_config_get ratios)}" atleast="${6-$(wallhaven_config_get atleast)}"
+  wallhaven_request "" "$page" "$categories" "$purity" "$sorting" "$ratios" "$atleast" | jq -e 'if type == "object" and (.data | type == "array") then . else error("invalid Wallhaven response") end'
+}
+
+wallhaven_download() {
+  local id="${1:?usage: wallhaven download <id>}"
+  [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || die "invalid wallpaper id: $id"
+  local info response url ext mime tmp_path views favorites color
+  response=$(curl --silent --show-error --fail-with-body --get "https://wallhaven.cc/api/v1/w/$id" | jq -c '.data // empty') || die "wallpaper id $id not found"
+  [[ -n "$response" ]] || die "wallpaper id $id not found"
+  info=$response
+  url=$(jq -r '.path // empty' <<< "$info")
+  ext=$(jq -r '.ext // "jpg"' <<< "$info")
+  [[ "$ext" =~ ^(jpg|jpeg|png|webp)$ ]] || ext=jpg
+  [[ -n "$url" ]] || die "wallpaper id $id has no download URL"
+  tmp_path="$HOME/.local/share/omarchy/themes/current/backgrounds/wallhaven-$id.$ext"
+  mkdir -p "$(dirname "$tmp_path")"
+  if ! curl --silent --show-error --fail-with-body --location --output "$tmp_path" "$url"; then
+    rm -f "$tmp_path"
+    die "failed to download wallpaper $id"
+  fi
+  mime=$(file --mime-type -b "$tmp_path")
+  case "$mime" in
+    image/png|image/jpeg|image/webp) ;;
+    *) rm -f "$tmp_path"; die "downloaded file is not a supported image: $url" ;;
+  esac
+  views=$(jq -r '.views // 0' <<< "$info")
+  favorites=$(jq -r '.favorites // 0' <<< "$info")
+  color=$(jq -r '.color // ""' <<< "$info")
+  jq -n --arg id "$id" --arg url "$url" --arg color "$color" --arg ext "$ext" --argjson views "$views" --argjson favorites "$favorites" \
+    '{id: $id, url: $url, color: $color, ext: $ext, views: $views, favorites: $favorites}' > "$tmp_path.source.json"
+  omarchy theme bg set "$tmp_path" >/dev/null 2>&1 || omarchy-theme-bg-set "$tmp_path" >/dev/null 2>&1 || {
+    rm -f "$tmp_path" "$tmp_path.source.json"
+    die "failed to apply wallpaper"
+  }
+  echo "Downloaded and set: $tmp_path"
+}
+
+wallhaven_apply() {
+  local id="${1:?usage: wallhaven apply <id>}"
+  wallhaven_download "$id"
+}
+
+wallhaven_random() {
+  local categories ratios purity atleast data url ext tmp_path mime views favorites
+  categories=$(wallhaven_config_get categories)
+  purity=$(wallhaven_config_get purity)
+  ratios=$(wallhaven_config_get ratios)
+  [[ -n "$ratios" ]] || ratios="16x9,16x10"
+  atleast=$(wallhaven_config_get atleast)
+  [[ -n "$atleast" ]] || atleast="1920x1080"
+  data=$(wallhaven_request "" 1 "$categories" "$purity" "random" "$ratios" "$atleast" | jq -c '.data[0] // empty') || die "no wallpapers matching criteria"
+  [[ -n "$data" ]] || die "no wallpapers matching criteria"
+  url=$(jq -r '.path // empty' <<< "$data")
+  ext=$(jq -r '.ext // "jpg"' <<< "$data")
+  [[ "$ext" =~ ^(jpg|jpeg|png|webp)$ ]] || ext=jpg
+  tmp_path="$HOME/.local/share/omarchy/themes/current/backgrounds/wallhaven-random.$ext"
+  mkdir -p "$(dirname "$tmp_path")"
+  if ! curl --silent --show-error --fail-with-body --location --output "$tmp_path" "$url"; then
+    rm -f "$tmp_path"
+    die "failed to download random wallpaper"
+  fi
+  mime=$(file --mime-type -b "$tmp_path")
+  case "$mime" in
+    image/png|image/jpeg|image/webp) ;;
+    *) rm -f "$tmp_path"; die "downloaded file is not a supported image" ;;
+  esac
+  views=$(jq -r '.views // 0' <<< "$data")
+  favorites=$(jq -r '.favorites // 0' <<< "$data")
+  jq -n --arg id "random" --arg url "$url" --arg ext "$ext" --argjson views "$views" --argjson favorites "$favorites" \
+    '{id: $id, url: $url, ext: $ext, views: $views, favorites: $favorites}' > "$tmp_path.source.json"
+  omarchy theme bg set "$tmp_path" >/dev/null 2>&1 || omarchy-theme-bg-set "$tmp_path" >/dev/null 2>&1 || {
+    rm -f "$tmp_path" "$tmp_path.source.json"
+    die "failed to apply wallpaper"
+  }
+  echo "Random wallpaper set: $tmp_path"
+}
+
+wallhaven_prune() {
+  local keep_last="${1:-20}"
+  local theme_dir="$HOME/.local/share/omarchy/themes/current/backgrounds"
+  local count
+  count=$(ls -1 "$theme_dir"/wallhaven-* 2>/dev/null | wc -l)
+  [[ "$count" -gt "$keep_last" ]] || return 0
+  ls -1t "$theme_dir"/wallhaven-* 2>/dev/null | tail -n +$((keep_last + 1)) | xargs -r rm -f
+  echo "Pruned to $keep_last wallhaven files (was $count)"
+}
+
+# ---------------------------------------------------------------- tags
+
+wallhaven_tags() {
+  local tags='landscape nature anime minimal dark cyberpunk 4k space'
+  echo "$tags"
+}
+
+wallhaven_save() {
+  local id="${1:?usage: wallpicker wallhaven save <id>}"
+  wallhaven_download "$id"
+}
+
+wallhaven_current() {
+  local theme_dir="$HOME/.local/share/omarchy/themes/current/backgrounds"
+  local current
+  if [[ -f "$STATE_FILE" ]]; then
+    current=$(jq -r '.lastAppliedPath // ""' "$STATE_FILE" 2>/dev/null)
+  fi
+  if [[ -z "$current" || ! -f "$current" ]]; then
+    current=$(ls -1t "$theme_dir"/wallhaven-* 2>/dev/null | head -1)
+  fi
+  if [[ -n "$current" && -f "$current" ]]; then
+    local name ext
+    name=$(basename "$current")
+    ext="${name##*.}"
+    local meta
+    meta=$(cat "${current}.source.json" 2>/dev/null || echo '{}')
+    echo "Current wallpaper: $name"
+    echo "Path: $current"
+    echo "Size: $(stat -c%s "$current" 2>/dev/null || echo unknown) bytes"
+    echo "Metadata: $meta"
+  else
+    echo "No wallhaven wallpaper currently set"
+  fi
+}
+
 # ---------------------------------------------------------------- dispatch
 
 case "${1:-help}" in
@@ -294,7 +471,22 @@ case "${1:-help}" in
       *)       die "unknown desktop subcommand: $1 (use: install|remove)" ;;
     esac
     ;;
-  help|-h|--help)
+  wallhaven)    shift
+    case "${1:-}" in
+      config)   shift; case "${1:-}" in get) wallhaven_config_get "${2:-}" ;; set) wallhaven_config_set "${2:-}" "${3:-}" ;; *) die "usage: wallhaven config get|set <key> [value]" ;; esac ;;
+      tags)     wallhaven_tags ;;
+      search)   shift; wallhaven_search "${1:-}" "${2:-1}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" ;;
+      photos)   shift; wallhaven_photos "${1:-1}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
+      random)   wallhaven_random ;;
+      download) shift; wallhaven_download "${1:-}" ;;
+      save)     shift; wallhaven_save "${1:-}" ;;
+      apply)    shift; wallhaven_apply "${1:-}" ;;
+      prune)    shift; wallhaven_prune "${1:-20}" ;;
+      current)  wallhaven_current ;;
+      *)        die "unknown wallhaven subcommand: $1 (try: wallpicker help)" ;;
+    esac
+    ;;
+help|-h|--help)
     cat <<'USAGE'
 wallpicker — Wallpaper picker and rotation for Omarchy
 
@@ -304,6 +496,16 @@ wallpicker — Wallpaper picker and rotation for Omarchy
   wallpicker config show|get|set     Read or edit ~/.config/omarchy/wallpicker.json
   wallpicker keybinds apply|clear    Generate/clear Hyprland keybind lua
   wallpicker desktop install|remove  Install/remove .desktop launcher entry
+  wallhaven search <query> [page]    Search Wallhaven API, output JSON
+  wallhaven photos [page]            Browse Wallhaven (no query)
+  wallhaven random                   Download a random wallpaper
+  wallhaven download <id>            Download a wallpaper by id
+  wallhaven apply <id>               Download + set as wallpaper
+  wallhaven prune                    Keep only last N wallhaven files
+  wallhaven current                  Show current wallhaven wallpaper info
+  wallhaven tags                     List curated tag shortcuts
+  wallhaven save <id>                Download and set a wallpaper by id
+  wallhaven config get|set           Read or edit wallhaven config
 USAGE
     ;;
   *) die "unknown command: $1 (try: wallpicker help)" ;;

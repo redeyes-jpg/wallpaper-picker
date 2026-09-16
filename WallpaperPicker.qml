@@ -15,8 +15,6 @@ Item {
     property var manifest: null
     property bool opened: false
 
-    // Change this if your wallpapers live somewhere other than ~/Pictures.
-    // Set recursive to true to also pick up images in subfolders.
     property string picturesDir: "$HOME/Pictures"
     property bool recursive: false
 
@@ -24,16 +22,27 @@ Item {
     property int gridSpacing: 14
     property int hoveredIndex: -1
     property bool loading: false
+    property bool wallhavenLoading: false
     property string statusText: ""
     property bool showSettings: false
 
-    // Rotation state, mirrored from ~/.config/omarchy/wallpicker.json.
     property bool rotationEnabled: false
     property int rotationIntervalMin: 30
     property bool rotationRandom: true
 
-    // Typed keybind entry state. pendingEntries tracks a combo that was
-    // committed while we check it against `hyprctl binds -j` for conflicts.
+    property bool showWallhaven: false
+    property int wallhavenPage: 1
+    property bool wallhavenEnd: false
+    property string wallhavenQuery: ""
+    property string wallhavenCategories: "111"
+    property string wallhavenPurity: "100"
+    property string wallhavenSorting: "date_added"
+    property string wallhavenRatios: "16x9"
+    property string wallhavenAtleast: ""
+
+    property int wallhavenRequestSerial: 0
+    property int wallhavenActiveRequest: 0
+
     property var pendingConfigKey: ""
     property var pendingCombo: ""
     property var pendingField: null
@@ -55,141 +64,290 @@ Item {
         id: imageModel
     }
 
-    // Sequential config writes through one process so a config file can never
-    // be produced by two writers racing each other (wallarchy pattern).
+    ListModel {
+        id: wallhavenModel
+    }
+
     property var commandQueue: []
 
     function enqueueCommand(args) {
-        commandQueue.push(args);
-        drainCommandQueue();
+        commandQueue.push(args)
+        drainCommandQueue()
     }
 
     function drainCommandQueue() {
         if (configProcess.running)
-            return;
+            return
         if (commandQueue.length === 0)
-            return;
-        var args = commandQueue.shift();
-        configProcess.command = [root.cliPath].concat(args);
-        configProcess.running = true;
-    }
-
-    function extensionFilter() {
-        // find -iname is case-insensitive per pattern, so list each once.
-        var exts = ["png", "jpg", "jpeg", "webp", "bmp", "gif", "tiff"];
-        var parts = [];
-        for (var i = 0; i < exts.length; i++)
-            parts.push("-iname '*." + exts[i] + "'");
-        return parts.join(" -o ");
+            return
+        var args = commandQueue.shift()
+        configProcess.command = [root.cliPath].concat(args)
+        configProcess.running = true
     }
 
     function reload() {
-        root.loading = true;
-        root.statusText = "";
-        imageModel.clear();
-        listProc.command = ["bash", "-c", "dir=\"" + root.picturesDir + "\"; " + "depth=" + (root.recursive ? "99" : "1") + "; " + "find \"$dir\" -maxdepth \"$depth\" -type f \\( " + extensionFilter() + " \\) 2>/dev/null | sort"];
-        listProc.running = true;
+        root.loading = true
+        root.statusText = ""
+        imageModel.clear()
+        listProc.command = [root.cliPath, "list"]
+        listProc.running = true
     }
 
     function baseName(path) {
-        var parts = path.split("/");
-        return parts[parts.length - 1];
+        var parts = String(path || "").split("/")
+        return parts[parts.length - 1]
+    }
+
+    function imagePath(path) {
+        var value = String(path || "")
+        if (value.indexOf("http://") === 0 || value.indexOf("https://") === 0 || value.indexOf("file:") === 0)
+            return value
+        return "file://" + value
     }
 
     function setWallpaper(path) {
-        root.statusText = "Applying " + baseName(path) + "…";
-        // Omarchy's own CLI is what actually owns the background symlink +
-        // swaybg reload. Shelling that out ourselves (as the first version
-        // of this plugin did) fought the CLI over that state and silently
-        // no-opped on current Omarchy releases. Let the CLI do it.
-        Util.execDetached("omarchy theme bg set " + Util.shellQuote(path));
+        root.statusText = "Applying " + root.baseName(path) + "…"
+        Util.execDetached("omarchy theme bg set " + Util.shellQuote(path))
     }
 
-    // ------------------------------------------------------ rotation
+    function applyWallhaven(id) {
+        if (!id)
+            return
+        root.statusText = "Downloading Wallhaven wallpaper…"
+        wallhavenApplyProc.command = [root.cliPath, "wallhaven", "apply", id]
+        wallhavenApplyProc.running = true
+    }
 
     function toggleRotation() {
-        root.setConfig("rotationEnabled", !root.rotationEnabled ? "true" : "false");
+        root.setConfig("rotationEnabled", root.rotationEnabled ? "false" : "true")
     }
 
     function setConfig(key, value) {
-        root.enqueueCommand(["config", "set", key, value]);
+        root.enqueueCommand(["config", "set", key, value])
+    }
+
+    function setWallhavenConfig(key, value) {
+        root.enqueueCommand(["wallhaven", "config", "set", key, value])
     }
 
     function cycleInterval() {
-        root.rotationIntervalMin = Model.nextInterval(root.rotationIntervalMin);
-        root.setConfig("rotationIntervalMin", String(root.rotationIntervalMin));
+        root.rotationIntervalMin = Model.nextInterval(root.rotationIntervalMin)
+        root.setConfig("rotationIntervalMin", String(root.rotationIntervalMin))
     }
 
     function toggleRotationMode() {
-        root.rotationRandom = !root.rotationRandom;
-        root.setConfig("rotationRandom", root.rotationRandom ? "true" : "false");
+        root.rotationRandom = !root.rotationRandom
+        root.setConfig("rotationRandom", root.rotationRandom ? "true" : "false")
     }
 
     function rotateNow() {
-        root.statusText = "Applying next wallpaper…";
-        root.enqueueCommand(["next"]);
+        root.statusText = "Applying next wallpaper…"
+        root.enqueueCommand(["next"])
     }
 
     function applyFolder() {
-        root.picturesDir = folderField.text.trim();
-        root.setConfig("picturesDir", root.picturesDir);
-        root.setConfig("recursive", root.recursive ? "true" : "false");
-        root.reload();
+        root.picturesDir = folderField.text.trim()
+        root.setConfig("picturesDir", root.picturesDir)
+        root.setConfig("recursive", root.recursive ? "true" : "false")
+        root.reload()
     }
-
-    // ------------------------------------------------------ rotation helpers
 
     function rotationIntervalLabel() {
         if (root.rotationIntervalMin <= 0)
-            return "Off";
-        return Model.intervalLabel(root.rotationIntervalMin);
+            return "Off"
+        return Model.intervalLabel(root.rotationIntervalMin)
     }
 
     function rotationDescription() {
         if (root.rotationEnabled && root.rotationIntervalMin > 0)
-            return "Rotation is active — wallpaper changes every " + Model.intervalLabel(root.rotationIntervalMin).toLowerCase() + ", picking " + (root.rotationRandom ? "at random" : "in order") + ".";
+            return "Rotation is active — wallpaper changes every " + Model.intervalLabel(root.rotationIntervalMin).toLowerCase() + ", picking " + (root.rotationRandom ? "at random" : "in order") + "."
         if (root.rotationIntervalMin > 0)
-            return "Rotation is off. Start it to change the wallpaper every " + Model.intervalLabel(root.rotationIntervalMin).toLowerCase() + ".";
-        return "Rotation interval is set to Off.";
+            return "Rotation is off. Start it to change the wallpaper every " + Model.intervalLabel(root.rotationIntervalMin).toLowerCase() + "."
+        return "Rotation interval is set to Off."
     }
 
-    // ------------------------------------------------------ keybinds (typed)
+    function categoriesValue(value) {
+        var number = parseInt(value, 10)
+        if (!isFinite(number) || number < 0 || number > 7)
+            return "111"
+        return String(number)
+    }
 
-    // Normalize a typed combo like "SUPER+W", "super + w", "ctrl shift w"
-    // into canonical "SUPER + W". Returns "" if the text isn't a usable combo.
+    function purityValue(value) {
+        return ["100", "010", "001"].indexOf(value) >= 0 ? value : "100"
+    }
+
+    function sortingValue(value) {
+        var options = ["relevance", "random", "date_added", "views", "favorites", "toplist"]
+        return options.indexOf(value) >= 0 ? value : "date_added"
+    }
+
+    function ratiosValue(value) {
+        var options = ["", "16x9", "16x10", "21x9", "32x9", "4x3", "5x4", "3x2"]
+        return options.indexOf(value) >= 0 ? value : "16x9"
+    }
+
+    function resolutionValue(value) {
+        var options = ["", "1920x1080", "2560x1440", "3840x2160", "5120x2880", "2560x1080", "3440x1440", "5120x2160"]
+        return options.indexOf(value) >= 0 ? value : ""
+    }
+
+    function purityLabel() {
+        if (root.wallhavenPurity === "010")
+            return "Sketchy"
+        if (root.wallhavenPurity === "001")
+            return "NSFW"
+        return "SFW"
+    }
+
+    function sortingLabel() {
+        var labels = {
+            relevance: "Relevance",
+            random: "Random",
+            date_added: "Date",
+            views: "Views",
+            favorites: "Favs",
+            toplist: "Toplist"
+        }
+        return labels[root.wallhavenSorting] || "Relevance"
+    }
+
+    function resolutionLabel() {
+        return root.wallhavenAtleast || "Any"
+    }
+
+    function ratioLabel() {
+        return root.wallhavenRatios || "Any"
+    }
+
+    function resetWallhaven() {
+        if (wallhavenProc.running)
+            wallhavenProc.running = false
+        root.wallhavenRequestSerial += 1
+        root.wallhavenActiveRequest = root.wallhavenRequestSerial
+        root.wallhavenPage = 1
+        wallhavenModel.clear()
+        root.wallhavenEnd = false
+        root.wallhavenLoading = false
+        root.loadWallhaven()
+    }
+
+    function loadWallhaven() {
+        if (wallhavenProc.running)
+            return
+        root.wallhavenRequestSerial += 1
+        root.wallhavenActiveRequest = root.wallhavenRequestSerial
+        root.wallhavenLoading = true
+        root.statusText = "Loading Wallhaven…"
+        var args = [root.cliPath, "wallhaven", root.wallhavenQuery ? "search" : "photos"]
+        if (root.wallhavenQuery)
+            args.push(root.wallhavenQuery)
+        args.push(String(root.wallhavenPage), root.wallhavenCategories, root.wallhavenPurity, root.wallhavenSorting, root.wallhavenRatios, root.wallhavenAtleast)
+        wallhavenProc.command = args
+        wallhavenProc.running = true
+    }
+
+    function loadMoreWallhaven() {
+        if (root.wallhavenLoading || root.wallhavenEnd || wallhavenProc.running)
+            return
+        root.wallhavenPage += 1
+        root.wallhavenLoading = true
+        var args = [root.cliPath, "wallhaven", root.wallhavenQuery ? "search" : "photos"]
+        if (root.wallhavenQuery)
+            args.push(root.wallhavenQuery)
+        args.push(String(root.wallhavenPage), root.wallhavenCategories, root.wallhavenPurity, root.wallhavenSorting, root.wallhavenRatios, root.wallhavenAtleast)
+        wallhavenProc.command = args
+        wallhavenProc.running = true
+    }
+
+    function toggleCategory(bit) {
+        var current = parseInt(root.wallhavenCategories, 10)
+        var next = current ^ bit
+        if (next === 0)
+            next = 7
+        root.wallhavenCategories = String(next)
+        root.setWallhavenConfig("categories", root.wallhavenCategories)
+        root.resetWallhaven()
+    }
+
+    function cyclePurity() {
+        var options = ["100", "010", "001"]
+        var index = options.indexOf(root.wallhavenPurity)
+        root.wallhavenPurity = options[(index + 1) % options.length]
+        root.setWallhavenConfig("purity", root.wallhavenPurity)
+        root.resetWallhaven()
+    }
+
+    function cycleSorting() {
+        var options = ["date_added", "random", "views", "favorites", "toplist", "relevance"]
+        var index = options.indexOf(root.wallhavenSorting)
+        root.wallhavenSorting = options[(index + 1) % options.length]
+        root.setWallhavenConfig("sorting", root.wallhavenSorting)
+        root.resetWallhaven()
+    }
+
+    function cycleRatios() {
+        var options = ["", "16x9", "16x10", "21x9", "32x9", "4x3", "5x4", "3x2"]
+        var index = options.indexOf(root.wallhavenRatios)
+        root.wallhavenRatios = options[(index + 1) % options.length]
+        root.setWallhavenConfig("ratios", root.wallhavenRatios)
+        root.resetWallhaven()
+    }
+
+    function hasWallhavenTag(name) {
+        return root.wallhavenQuery.split(/\s+/).indexOf(name) >= 0
+    }
+
+    function toggleWallhavenTag(name) {
+        var parts = root.wallhavenQuery.split(/\s+/).filter(function(p) { return p.length > 0 && p !== name })
+        if (!root.hasWallhavenTag(name)) parts.push(name)
+        var q = parts.join(" ")
+        wallhavenSearchField.text = q
+        root.wallhavenQuery = q
+        root.resetWallhaven()
+    }
+
+    function cycleResolution() {
+        var options = ["", "1920x1080", "2560x1440", "3840x2160", "5120x2880", "2560x1080", "3440x1440", "5120x2160"]
+        var index = options.indexOf(root.wallhavenAtleast)
+        root.wallhavenAtleast = options[(index + 1) % options.length]
+        root.setWallhavenConfig("atleast", root.wallhavenAtleast)
+        root.resetWallhaven()
+    }
+
     function normalizeCombo(raw) {
-        var t = (raw || "").trim();
+        var t = String(raw || "").trim()
         if (t === "")
-            return "";
-        var parts = t.toUpperCase().split(/[\s+,.]+/).filter(function (p) {
-            return p.length > 0;
-        });
+            return ""
+        var parts = t.toUpperCase().split(/[\s+,.]+/).filter(function (part) {
+            return part.length > 0
+        })
         if (parts.length < 2)
-            return "";
-        var key = root.normalizeKeyToken(parts[parts.length - 1]);
+            return ""
+        var key = root.normalizeKeyToken(parts[parts.length - 1])
         if (key === "")
-            return "";
-        var mods = [];
+            return ""
+        var mods = []
         for (var i = 0; i < parts.length - 1; i++) {
-            var m = root.normalizeModToken(parts[i]);
-            if (m === "")
-                return "";
-            if (mods.indexOf(m) < 0)
-                mods.push(m);
+            var modifier = root.normalizeModToken(parts[i])
+            if (modifier === "")
+                return ""
+            if (mods.indexOf(modifier) < 0)
+                mods.push(modifier)
         }
         if (mods.length === 0)
-            return ""; // bare key would break typing globally
-        var order = ["SUPER", "SHIFT", "CTRL", "ALT"];
-        var out = [];
+            return ""
+        var order = ["SUPER", "SHIFT", "CTRL", "ALT"]
+        var out = []
         for (var j = 0; j < order.length; j++)
             if (mods.indexOf(order[j]) >= 0)
-                out.push(order[j]);
-        out.push(key);
-        return out.join(" + ");
+                out.push(order[j])
+        out.push(key)
+        return out.join(" + ")
     }
 
-    function normalizeModToken(tok) {
-        switch (tok) {
+    function normalizeModToken(token) {
+        switch (token) {
         case "SUPER":
         case "WIN":
         case "META":
@@ -197,32 +355,32 @@ Item {
         case "MOD4":
         case "SUPER_L":
         case "SUPER_R":
-            return "SUPER";
+            return "SUPER"
         case "SHIFT":
         case "SHIFT_L":
         case "SHIFT_R":
-            return "SHIFT";
+            return "SHIFT"
         case "CTRL":
         case "CONTROL":
         case "CTRL_L":
         case "CTRL_R":
-            return "CTRL";
+            return "CTRL"
         case "ALT":
         case "ALT_L":
         case "ALT_R":
         case "MOD1":
-            return "ALT";
+            return "ALT"
         }
-        return "";
+        return ""
     }
 
-    function normalizeKeyToken(tok) {
-        if (tok.length === 1 && tok >= "A" && tok <= "Z")
-            return tok;
-        if (tok.length === 1 && tok >= "0" && tok <= "9")
-            return tok;
-        if (tok.length >= 2 && tok.charAt(0) === "F" && !isNaN(Number(tok.substring(1))) && Number(tok.substring(1)) >= 1 && Number(tok.substring(1)) <= 12)
-            return tok;
+    function normalizeKeyToken(token) {
+        if (token.length === 1 && token >= "A" && token <= "Z")
+            return token
+        if (token.length === 1 && token >= "0" && token <= "9")
+            return token
+        if (token.length >= 2 && token.charAt(0) === "F" && !isNaN(Number(token.substring(1))) && Number(token.substring(1)) >= 1 && Number(token.substring(1)) <= 12)
+            return token
         var names = {
             SPACE: "SPACE",
             RETURN: "RETURN",
@@ -253,207 +411,269 @@ Item {
             BRACKETRIGHT: "bracketright",
             GRAVE: "grave",
             QUOTELEFT: "grave"
-        };
-        if (tok in names)
-            return names[tok];
-        return "";
+        }
+        if (token in names)
+            return names[token]
+        return ""
     }
 
-    // X11 modifier mask bits as reported by hyprctl binds -j (modmask field).
     function comboModmask(combo) {
-        var mask = 0;
+        var mask = 0
         if (combo.indexOf("SHIFT") >= 0)
-            mask |= 1;
+            mask |= 1
         if (combo.indexOf("CTRL") >= 0)
-            mask |= 4;
+            mask |= 4
         if (combo.indexOf("ALT") >= 0)
-            mask |= 8;
+            mask |= 8
         if (combo.indexOf("SUPER") >= 0)
-            mask |= 64;
-        return mask;
+            mask |= 64
+        return mask
     }
 
     function comboKeyName(combo) {
-        var parts = combo.split(" + ");
-        return parts[parts.length - 1];
+        var parts = combo.split(" + ")
+        return parts[parts.length - 1]
     }
 
-    // wallpicker's own binds (emitted by wallpicker-cli) — replacing those
-    // silently is fine, so the conflict popup only fires for OTHER apps.
-    function isWallpickerBind(desc) {
-        return desc === "Wallpaper picker" || desc === "Toggle wallpaper rotation" || desc === "Rotate wallpaper now";
+    function isWallpickerBind(description) {
+        return description === "Wallpaper picker" || description === "Toggle wallpaper rotation" || description === "Rotate wallpaper now"
     }
 
-    // The o.bind() description this plugin emits for a given config key, used
-    // both by the conflict check (own binds replace silently) and by the
-    // post-apply verification against hyprctl binds -j.
     function descForConfigKey(configKey) {
         if (configKey === "keybindToggleRotation")
-            return "Toggle wallpaper rotation";
+            return "Toggle wallpaper rotation"
         if (configKey === "keybindRotateNow")
-            return "Rotate wallpaper now";
-        return "Wallpaper picker"; // keybindOpen
+            return "Rotate wallpaper now"
+        return "Wallpaper picker"
     }
 
-    // Called when a keybind field is committed (Enter or focus lost).
     function commitKeybind(configKey, field) {
-        var combo = root.normalizeCombo(field.text);
-        var prev = root.configData && root.configData[configKey] ? root.configData[configKey] : "";
+        var combo = root.normalizeCombo(field.text)
+        var previous = root.configData && root.configData[configKey] ? root.configData[configKey] : ""
         if (combo === "") {
             if (field.text.trim() !== "")
-                root.statusText = "Invalid combo — type e.g. SUPER + W";
-            field.text = prev; // revert invalid input
-            return;
+                root.statusText = "Invalid combo — type e.g. SUPER + W"
+            field.text = previous
+            return
         }
-        if (combo === prev) {
-            field.text = prev; // normalize display, nothing to write
-            return;
+        if (combo === previous) {
+            field.text = previous
+            return
         }
-        root.pendingConfigKey = configKey;
-        root.pendingCombo = combo;
-        root.pendingField = field;
-        bindsProc.command = ["hyprctl", "binds", "-j"];
-        bindsProc.running = true;
+        root.pendingConfigKey = configKey
+        root.pendingCombo = combo
+        root.pendingField = field
+        bindsProc.command = ["hyprctl", "binds", "-j"]
+        bindsProc.running = true
     }
 
     function applyPendingKeybind() {
         if (root.pendingConfigKey === "" || root.pendingCombo === "")
-            return;
-        root.statusText = "";
-        // Stage what was written so the post-apply recheck knows what to look
-        // for in the lua file and in hyprctl binds -j.
-        root.keybindVerifyCombo = root.pendingCombo;
-        root.keybindVerifyDesc = root.descForConfigKey(root.pendingConfigKey);
-        root.keybindVerifyKey = root.comboKeyName(root.pendingCombo).toUpperCase();
-        root.keybindVerifyMask = root.comboModmask(root.pendingCombo);
-        root.keybindVerifyPending = true;
-        root.setConfig(root.pendingConfigKey, root.pendingCombo);
-        root.enqueueCommand(["keybinds", "apply"]);
+            return
+        root.statusText = ""
+        root.keybindVerifyCombo = root.pendingCombo
+        root.keybindVerifyDesc = root.descForConfigKey(root.pendingConfigKey)
+        root.keybindVerifyKey = root.comboKeyName(root.pendingCombo).toUpperCase()
+        root.keybindVerifyMask = root.comboModmask(root.pendingCombo)
+        root.keybindVerifyPending = true
+        root.setConfig(root.pendingConfigKey, root.pendingCombo)
+        root.enqueueCommand(["keybinds", "apply"])
         if (root.pendingField)
-            root.pendingField.text = root.pendingCombo; // show normalized form
-        root.pendingConfigKey = "";
-        root.pendingCombo = "";
-        root.pendingField = null;
-        root.takenPopupVisible = false;
+            root.pendingField.text = root.pendingCombo
+        root.pendingConfigKey = ""
+        root.pendingCombo = ""
+        root.pendingField = null
+        root.takenPopupVisible = false
     }
 
-    // Rechecks that the binding was actually written to the generated lua and
-    // registered with Hyprland before we confirm "Applied" to the user.
     function runKeybindVerify() {
-        var combo = root.keybindVerifyCombo;
-        var desc = root.keybindVerifyDesc;
-        var key = root.keybindVerifyKey;
-        var mask = root.keybindVerifyMask;
-        var qcombo = combo.replace(/'/g, "'\\''");
-        var script = "lua=\"$HOME/.config/hypr/wallpicker.lua\"; " + "if ! grep -Fq '" + qcombo + "' \"$lua\"; then echo MISSING_LUA; exit 1; fi; " + "if ! hyprctl binds -j | jq -e '[.[] | select((.submap // \"\") == \"\" and .key == \"" + key + "\" and .modmask == " + mask + " and .description == \"" + desc + "\")] | length > 0' >/dev/null 2>&1; then echo NOT_BOUND; exit 2; fi; " + "echo APPLIED";
-        verifyProc.command = ["bash", "-c", script];
-        verifyProc.running = true;
+        var combo = root.keybindVerifyCombo
+        var description = root.keybindVerifyDesc
+        var key = root.keybindVerifyKey
+        var mask = root.keybindVerifyMask
+        var quotedCombo = combo.replace(/'/g, "'\\''")
+        var script = "lua=\"$HOME/.config/hypr/wallpicker.lua\"; " +
+            "if ! grep -Fq '" + quotedCombo + "' \"$lua\"; then echo MISSING_LUA; exit 1; fi; " +
+            "if ! hyprctl binds -j | jq -e '[.[] | select((.submap // \"\") == \"\" and .key == \"" + key + "\" and .modmask == " + mask + " and .description == \"" + description + "\")] | length > 0' >/dev/null 2>&1; then echo NOT_BOUND; exit 2; fi; " +
+            "echo APPLIED"
+        verifyProc.command = ["bash", "-c", script]
+        verifyProc.running = true
     }
 
     function cancelPendingKeybind() {
-        var prev = root.configData && root.configData[root.pendingConfigKey] ? root.configData[root.pendingConfigKey] : "";
+        var previous = root.configData && root.configData[root.pendingConfigKey] ? root.configData[root.pendingConfigKey] : ""
         if (root.pendingField)
-            root.pendingField.text = prev;
-        root.pendingConfigKey = "";
-        root.pendingCombo = "";
-        root.pendingField = null;
-        root.takenPopupVisible = false;
+            root.pendingField.text = previous
+        root.pendingConfigKey = ""
+        root.pendingCombo = ""
+        root.pendingField = null
+        root.takenPopupVisible = false
     }
 
     property var configData: null
-
-    // Keybind apply verification state — set when "keybinds apply" is queued,
-    // consumed in configProcess.onExited once that exact command finished, then
-    // runKeybindVerify() rechecks the lua file + live Hyprland binds before we
-    // report "Applied: <combo>".
     property bool keybindVerifyPending: false
     property string keybindVerifyCombo: ""
     property string keybindVerifyDesc: ""
     property string keybindVerifyKey: ""
     property int keybindVerifyMask: 0
 
-    // ------------------------------------------------------ open/close
-
     function open(payloadJson) {
-        root.opened = true;
-        root.reload();
+        root.opened = true
+        root.reload()
         Qt.callLater(function () {
-            keyCatcher.forceActiveFocus();
-        });
+            keyCatcher.forceActiveFocus()
+        })
     }
 
     function close() {
-        root.opened = false;
+        root.opened = false
     }
 
     function dismiss() {
-        root.opened = false;
+        root.opened = false
         if (root.shell && typeof root.shell.hide === "function")
-            root.shell.hide((root.manifest && root.manifest.id) || "wallpicker.grid");
+            root.shell.hide((root.manifest && root.manifest.id) || "wallpicker.grid")
     }
 
     function toggle() {
         if (root.opened)
-            root.dismiss();
+            root.dismiss()
         else
-            root.open("{}");
+            root.open("{}")
     }
 
     IpcHandler {
         target: "wallpicker"
+
         function toggle(): string {
-            root.toggle();
-            return "ok";
+            root.toggle()
+            return "ok"
         }
+
         function open(): string {
-            root.open("{}");
-            return "ok";
+            root.open("{}")
+            return "ok"
         }
+
         function close(): string {
-            root.dismiss();
-            return "ok";
+            root.dismiss()
+            return "ok"
         }
+
         function status(): string {
-            return root.opened ? "open" : "closed";
+            return root.opened ? "open" : "closed"
         }
+
         function toggleRotation(): string {
-            root.toggleRotation();
-            return "ok";
+            root.toggleRotation()
+            return "ok"
         }
+
         function cycleNow(): string {
-            root.rotateNow();
-            return "ok";
+            root.rotateNow()
+            return "ok"
         }
+
         function setInterval(minutes: string): string {
-            var n = Number(minutes);
-            if (!isFinite(n))
-                return "err";
-            root.rotationIntervalMin = Math.round(n);
-            root.setConfig("rotationIntervalMin", String(root.rotationIntervalMin));
-            return "ok";
+            var value = Number(minutes)
+            if (!isFinite(value))
+                return "err"
+            root.rotationIntervalMin = Math.round(value)
+            root.setConfig("rotationIntervalMin", String(root.rotationIntervalMin))
+            return "ok"
         }
+
         function rotationStatus(): string {
             if (root.rotationEnabled && root.rotationIntervalMin > 0)
-                return "active:" + root.rotationIntervalMin;
-            return "inactive";
+                return "active:" + root.rotationIntervalMin
+            return "inactive"
         }
     }
 
     Process {
         id: listProc
+        command: []
         stdout: StdioCollector {
+            id: listStdout
             waitForEnd: true
-            onStreamFinished: {
-                var lines = text.split("\n").filter(function (l) {
-                    return l.length > 0;
-                });
-                for (var i = 0; i < lines.length; i++)
-                    imageModel.append({
-                        path: lines[i]
-                    });
-                root.loading = false;
-                if (lines.length === 0)
-                    root.statusText = "No images found in " + root.picturesDir;
+        }
+        onExited: function (code) {
+            root.loading = false
+            if (code !== 0) {
+                root.statusText = "Failed to read wallpaper folder"
+                return
+            }
+            var paths = Model.parseJson(listStdout.text, [], 16777216)
+            if (!(paths instanceof Array)) {
+                root.statusText = "Invalid wallpaper list"
+                return
+            }
+            for (var i = 0; i < paths.length; i++) {
+                imageModel.append({
+                    path: String(paths[i]),
+                    fullPath: "",
+                    wallhavenId: "",
+                    label: "",
+                    color: ""
+                })
+            }
+            if (paths.length === 0)
+                root.statusText = "No images found in " + root.picturesDir
+        }
+    }
+
+    Process {
+        id: wallhavenProc
+        command: []
+        stdout: StdioCollector {
+            id: wallhavenStdout
+            waitForEnd: true
+        }
+        onExited: function (code) {
+            if (root.wallhavenActiveRequest !== root.wallhavenRequestSerial)
+                return
+            root.wallhavenLoading = false
+            if (code !== 0) {
+                root.statusText = "Wallhaven request failed"
+                return
+            }
+            var rows = Model.photoRows(Model.parseJson(wallhavenStdout.text, {}, 16777216))
+            if (root.wallhavenPage === 1)
+                wallhavenModel.clear()
+            for (var i = 0; i < rows.length; i++) {
+                var row = rows[i]
+                wallhavenModel.append({
+                    path: row.thumb,
+                    fullPath: row.full,
+                    wallhavenId: row.wallhavenId,
+                    label: row.label,
+                    color: row.color
+                })
+            }
+            if (rows.length === 0) {
+                root.wallhavenEnd = true
+                if (wallhavenModel.count === 0)
+                    root.statusText = "No results found"
+            } else {
+                root.wallhavenEnd = rows.length < 24
+                root.statusText = wallhavenModel.count + " Wallhaven results"
+            }
+        }
+    }
+
+    Process {
+        id: wallhavenApplyProc
+        command: []
+        stdout: StdioCollector {
+            id: wallhavenApplyStdout
+            waitForEnd: true
+        }
+        onExited: function (code) {
+            if (code === 0) {
+                root.statusText = "Wallhaven wallpaper applied"
+            } else {
+                var message = String(wallhavenApplyStdout.text).trim()
+                root.statusText = message || "Failed to apply Wallhaven wallpaper"
             }
         }
     }
@@ -466,23 +686,19 @@ Item {
         }
         onExited: function (code) {
             if (code !== 0)
-                root.statusText = "Command failed";
-            // Only verify right after the "keybinds apply" command itself ran
-            // (config set / next / etc. must not consume the verify flag).
+                root.statusText = "Command failed"
             if (root.keybindVerifyPending && configProcess.command.join(" ") === root.cliPath + " keybinds apply") {
-                root.keybindVerifyPending = false;
+                root.keybindVerifyPending = false
                 if (code === 0)
-                    root.runKeybindVerify();
+                    root.runKeybindVerify()
                 else
-                    root.statusText = "Apply failed — wallpicker-cli exited " + code;
+                    root.statusText = "Apply failed — wallpicker-cli exited " + code
             }
-            root.drainCommandQueue();
+            root.drainCommandQueue()
         }
     }
 
-    // Queries hyprctl binds -j so a typed keybind can be checked for
-    // conflicts with existing global binds before it is written.
-Process {
+    Process {
         id: bindsProc
         command: []
         stdout: StdioCollector {
@@ -491,36 +707,33 @@ Process {
         }
         onExited: function (code) {
             if (root.pendingConfigKey === "")
-                return;
+                return
             if (code !== 0) {
-                root.applyPendingKeybind();
-                return;
+                root.applyPendingKeybind()
+                return
             }
-            var output = bindsStdout.text;
-            var entries = Model.parseJson(output, [], 16777216);
-            var combo = root.pendingCombo;
-            var key = root.comboKeyName(combo).toUpperCase();
-            var mask = root.comboModmask(combo);
+            var entries = Model.parseJson(bindsStdout.text, [], 16777216)
+            var combo = root.pendingCombo
+            var key = root.comboKeyName(combo).toUpperCase()
+            var mask = root.comboModmask(combo)
             for (var i = 0; i < entries.length; i++) {
-                var e = entries[i];
-                if ((e.submap || "") !== "")
-                    continue; // only global binds collide with ours
-                if (!e.key)
-                    continue;
-                if (e.key.toUpperCase() !== key || e.modmask !== mask)
-                    continue;
-                if (root.isWallpickerBind(e.description))
-                    continue; // our own bind — replace silently
-                root.takenByDesc = e.description || "another action";
-                root.takenPopupVisible = true;
-                return;
+                var entry = entries[i]
+                if ((entry.submap || "") !== "")
+                    continue
+                if (!entry.key)
+                    continue
+                if (entry.key.toUpperCase() !== key || entry.modmask !== mask)
+                    continue
+                if (root.isWallpickerBind(entry.description))
+                    continue
+                root.takenByDesc = entry.description || "another action"
+                root.takenPopupVisible = true
+                return
             }
-            root.applyPendingKeybind();
+            root.applyPendingKeybind()
         }
     }
 
-    // Verifies a just-applied keybind against the generated lua file and the
-    // live Hyprland bind table, and reports "Applied: <combo>" only then.
     Process {
         id: verifyProc
         command: []
@@ -529,67 +742,72 @@ Process {
         }
         onExited: function (code) {
             if (root.keybindVerifyCombo === "")
-                return;
-            var out = String(text).trim();
-            if (code === 0 && out === "APPLIED") {
-                root.statusText = "Applied: " + root.keybindVerifyCombo;
-                root.appliedTimer.restart();
-            } else if (out === "MISSING_LUA") {
-                root.statusText = "Apply failed — binding not found in wallpicker.lua";
-            } else if (out === "NOT_BOUND") {
-                root.statusText = "Apply failed — Hyprland did not register the bind";
+                return
+            var output = String(text).trim()
+            if (code === 0 && output === "APPLIED") {
+                root.statusText = "Applied: " + root.keybindVerifyCombo
+                root.appliedTimer.restart()
+            } else if (output === "MISSING_LUA") {
+                root.statusText = "Apply failed — binding not found in wallpicker.lua"
+            } else if (output === "NOT_BOUND") {
+                root.statusText = "Apply failed — Hyprland did not register the bind"
             } else {
-                root.statusText = "Apply failed — verification exited " + code;
+                root.statusText = "Apply failed — verification exited " + code
             }
-            root.keybindVerifyCombo = "";
-            root.keybindVerifyDesc = "";
-            root.keybindVerifyKey = "";
-            root.keybindVerifyMask = 0;
+            root.keybindVerifyCombo = ""
+            root.keybindVerifyDesc = ""
+            root.keybindVerifyKey = ""
+            root.keybindVerifyMask = 0
         }
     }
 
-    // Clears the "Applied: ..." confirmation after a moment so the status area
-    // doesn't stay stale; reopening the window also resets it (reload()).
     Timer {
         id: appliedTimer
         interval: 8000
         repeat: false
         onTriggered: {
             if (root.statusText.indexOf("Applied:") === 0)
-                root.statusText = "";
+                root.statusText = ""
         }
     }
 
     FileView {
+        id: configFile
         path: root.configPath
         watchChanges: true
         printErrors: false
         onLoaded: root.applyConfig(text())
-        onFileChanged: reload()
+        onFileChanged: configFile.reload()
         onLoadFailed: root.applyConfig("{}")
     }
 
     function applyConfig(raw) {
-        var config = Model.parseJson(raw, {}, 65536);
-        root.configData = config;
-        root.picturesDir = (config.picturesDir || root.picturesDir).replace(/^\~\//, Quickshell.env("HOME") + "/");
-        root.recursive = Model.asBool(config.recursive, root.recursive);
-        root.rotationEnabled = Model.asBool(config.rotationEnabled, root.rotationEnabled);
-        root.rotationIntervalMin = Model.asInt(config.rotationIntervalMin, root.rotationIntervalMin);
-        root.rotationRandom = Model.asBool(config.rotationRandom, root.rotationRandom);
+        var config = Model.parseJson(raw, {}, 65536)
+        root.configData = config
+        root.picturesDir = (config.picturesDir || root.picturesDir).replace(/^\~\//, Quickshell.env("HOME") + "/")
+        root.recursive = Model.asBool(config.recursive, root.recursive)
+        root.rotationEnabled = Model.asBool(config.rotationEnabled, root.rotationEnabled)
+        root.rotationIntervalMin = Model.asInt(config.rotationIntervalMin, root.rotationIntervalMin)
+        root.rotationRandom = Model.asBool(config.rotationRandom, root.rotationRandom)
+        var wallhaven = config.wallhaven || {}
+        root.wallhavenCategories = root.categoriesValue(wallhaven.categories || root.wallhavenCategories)
+        root.wallhavenPurity = root.purityValue(wallhaven.purity || root.wallhavenPurity)
+        root.wallhavenSorting = root.sortingValue(wallhaven.sorting || root.wallhavenSorting)
+        root.wallhavenRatios = root.ratiosValue(wallhaven.ratios !== undefined ? wallhaven.ratios : root.wallhavenRatios)
+        root.wallhavenAtleast = root.resolutionValue(wallhaven.atleast !== undefined ? wallhaven.atleast : root.wallhavenAtleast)
     }
 
     FloatingWindow {
         id: panel
         visible: root.opened
         title: "Wallpaper Picker"
-        color: "#0a0a0a"
+        color: root.bg
         implicitWidth: 1100
         implicitHeight: 720
         minimumSize: Qt.size(640, 480)
         onVisibleChanged: {
             if (!visible && root.opened)
-                root.dismiss();
+                root.dismiss()
         }
 
         Item {
@@ -600,11 +818,11 @@ Process {
             Keys.onPressed: function (event) {
                 if (event.key === Qt.Key_Escape) {
                     if (root.showSettings) {
-                        root.showSettings = false;
-                        event.accepted = true;
+                        root.showSettings = false
+                        event.accepted = true
                     } else {
-                        root.dismiss();
-                        event.accepted = true;
+                        root.dismiss()
+                        event.accepted = true
                     }
                 }
             }
@@ -614,7 +832,6 @@ Process {
                 color: root.bg
             }
 
-            // ================================================= header
             Item {
                 id: header
                 width: parent.width
@@ -622,7 +839,7 @@ Process {
                 anchors.top: parent.top
 
                 Text {
-                    text: root.showSettings ? "SETTINGS" : "WALLPAPERS"
+                    text: root.showSettings ? "SETTINGS" : (root.showWallhaven ? "WALLHAVEN" : "WALLPAPERS")
                     color: root.muted
                     font.pixelSize: 11
                     font.letterSpacing: 3
@@ -633,7 +850,7 @@ Process {
                 }
 
                 Text {
-                    text: root.loading ? "loading…" : (imageModel.count + " images")
+                    text: (root.loading || root.wallhavenLoading) ? "loading…" : ((root.showWallhaven ? wallhavenModel.count : imageModel.count) + " images")
                     color: root.subtle
                     font.pixelSize: 11
                     font.letterSpacing: 1
@@ -651,41 +868,233 @@ Process {
 
                     ToolBtn {
                         visible: root.showSettings
-                        iconText: "\uDB80\uDF0D" // md-keyboard_backspace (back)
+                        iconText: "\uDB80\uDF0D"
                         tooltip: "Back to wallpapers"
-                        onClicked: {
-                            root.showSettings = false;
-                        }
+                        onClicked: root.showSettings = false
                     }
 
                     ToolBtn {
                         visible: !root.showSettings
-                        iconText: "\uEAF8" // cod-gear (settings)
+                        iconText: "\uEAF8"
                         tooltip: "Settings"
-                        onClicked: {
-                            root.showSettings = true;
+                        onClicked: root.showSettings = true
+                    }
+                }
+            }
+
+            Item {
+                id: tabs
+                width: parent.width
+                height: 40
+                anchors.top: header.bottom
+
+                ToolBtn {
+                    id: tabWallpapersBtn
+                    width: 120
+                    height: 32
+                    text: "WALLPAPERS"
+                    tooltip: "Local wallpapers"
+                    highlighted: !root.showWallhaven
+                    anchors.left: parent.left
+                    anchors.leftMargin: 28
+                    anchors.verticalCenter: parent.verticalCenter
+                    onClicked: {
+                        root.showWallhaven = false
+                        root.showSettings = false
+                        root.wallhavenPage = 1
+                        wallhavenModel.clear()
+                        root.wallhavenEnd = false
+                        root.reload()
+                    }
+                }
+
+                ToolBtn {
+                    width: 120
+                    height: 32
+                    text: "WALLHAVEN"
+                    tooltip: "Wallhaven API wallpapers"
+                    highlighted: root.showWallhaven
+                    anchors.left: tabWallpapersBtn.right
+                    anchors.leftMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    onClicked: {
+                        root.showWallhaven = true
+                        root.showSettings = false
+                        root.resetWallhaven()
+                    }
+                }
+            }
+
+            Item {
+                id: wallhavenFilters
+                visible: root.showWallhaven && !root.showSettings
+                width: parent.width
+                height: 48
+                anchors.top: tabs.bottom
+
+                Flickable {
+                    anchors.fill: parent
+                    contentWidth: filtersRow.implicitWidth
+                    contentHeight: parent.height
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    Row {
+                        id: filtersRow
+                        anchors.left: parent.left
+                        anchors.leftMargin: 28
+                        anchors.verticalCenter: parent.verticalCenter
+                        height: 32
+                        spacing: 10
+
+                        TextField {
+                            id: wallhavenSearchField
+                            width: 220
+                            height: 32
+                            placeholderText: "Search Wallhaven…"
+                            placeholderTextColor: root.subtle
+                            color: root.fg
+                            font.pixelSize: 12
+                            selectByMouse: true
+                            background: Rectangle {
+                                radius: 6
+                                color: root.fieldBg
+                                border.width: 1
+                                border.color: wallhavenSearchField.activeFocus ? root.accent : root.fieldBorder
+                            }
+                            onAccepted: {
+                                root.wallhavenQuery = text.trim()
+                                root.resetWallhaven()
+                            }
+                        }
+
+                        Row {
+                            spacing: 6
+
+                            ToolBtn {
+                                text: "General"
+                                width: 70
+                                height: 32
+                                highlighted: (parseInt(root.wallhavenCategories, 10) & 4) !== 0
+                                onClicked: root.toggleCategory(4)
+                            }
+
+                            ToolBtn {
+                                text: "Anime"
+                                width: 70
+                                height: 32
+                                highlighted: (parseInt(root.wallhavenCategories, 10) & 2) !== 0
+                                onClicked: root.toggleCategory(2)
+                            }
+
+                            ToolBtn {
+                                text: "People"
+                                width: 70
+                                height: 32
+                                highlighted: (parseInt(root.wallhavenCategories, 10) & 1) !== 0
+                                onClicked: root.toggleCategory(1)
+                            }
+                        }
+
+                        Row {
+                            id: tagChipsRow
+                            spacing: 6
+
+                            ToolBtn { text: "landscape"; width: 65; height: 32; highlighted: root.hasWallhavenTag("landscape"); tooltip: "Filter by: landscape"; onClicked: root.toggleWallhavenTag("landscape") }
+                            ToolBtn { text: "nature"; width: 65; height: 32; highlighted: root.hasWallhavenTag("nature"); tooltip: "Filter by: nature"; onClicked: root.toggleWallhavenTag("nature") }
+                            ToolBtn { text: "anime"; width: 65; height: 32; highlighted: root.hasWallhavenTag("anime"); tooltip: "Filter by: anime"; onClicked: root.toggleWallhavenTag("anime") }
+                            ToolBtn { text: "minimal"; width: 65; height: 32; highlighted: root.hasWallhavenTag("minimal"); tooltip: "Filter by: minimal"; onClicked: root.toggleWallhavenTag("minimal") }
+                            ToolBtn { text: "dark"; width: 65; height: 32; highlighted: root.hasWallhavenTag("dark"); tooltip: "Filter by: dark"; onClicked: root.toggleWallhavenTag("dark") }
+                            ToolBtn { text: "cyberpunk"; width: 65; height: 32; highlighted: root.hasWallhavenTag("cyberpunk"); tooltip: "Filter by: cyberpunk"; onClicked: root.toggleWallhavenTag("cyberpunk") }
+                            ToolBtn { text: "4k"; width: 65; height: 32; highlighted: root.hasWallhavenTag("4k"); tooltip: "Filter by: 4k"; onClicked: root.toggleWallhavenTag("4k") }
+                            ToolBtn { text: "space"; width: 65; height: 32; highlighted: root.hasWallhavenTag("space"); tooltip: "Filter by: space"; onClicked: root.toggleWallhavenTag("space") }
+                        }
+
+                        ToolBtn {
+                            width: 80
+                            height: 32
+                            text: root.purityLabel()
+                            tooltip: "Purity"
+                            onClicked: root.cyclePurity()
+                        }
+
+                        ToolBtn {
+                            id: sortBtn
+                            width: 110
+                            height: 32
+                            text: root.sortingLabel()
+                            tooltip: "Sort by"
+                            onClicked: root.cycleSorting()
+                        }
+
+                        ToolBtn {
+                            id: randomSortBtn
+                            width: 72
+                            height: 32
+                            text: "Random"
+                            tooltip: "Sort: Random"
+                            highlighted: root.wallhavenSorting === "random"
+                            visible: true
+                            onClicked: {
+                                root.wallhavenSorting = "random"
+                                root.setWallhavenConfig("sorting", "random")
+                                root.resetWallhaven()
+                            }
+                        }
+
+                        ToolBtn {
+                            id: toplistSortBtn
+                            width: 72
+                            height: 32
+                            text: "Toplist"
+                            tooltip: "Sort: Toplist"
+                            highlighted: root.wallhavenSorting === "toplist"
+                            visible: true
+                            onClicked: {
+                                root.wallhavenSorting = "toplist"
+                                root.setWallhavenConfig("sorting", "toplist")
+                                root.resetWallhaven()
+                            }
+                        }
+
+                        ToolBtn {
+                            id: ratioBtn
+                            width: 70
+                            height: 32
+                            text: root.ratioLabel()
+                            tooltip: "Aspect ratio"
+                            onClicked: root.cycleRatios()
+                        }
+
+                        ToolBtn {
+                            width: 110
+                            height: 32
+                            text: root.resolutionLabel()
+                            tooltip: "Minimum resolution"
+                            onClicked: root.cycleResolution()
                         }
                     }
                 }
             }
 
-            // ================================================= status
             Text {
                 id: statusLabel
                 visible: root.statusText.length > 0
                 text: root.statusText
                 color: root.muted
                 font.pixelSize: 12
-                anchors.top: header.bottom
+                height: 22
+                anchors.top: tabs.bottom
+                anchors.topMargin: wallhavenFilters.visible ? wallhavenFilters.height : 0
                 anchors.left: parent.left
                 anchors.leftMargin: 28
             }
 
-            // ================================================= grid tab
             Item {
                 id: gridTab
                 visible: !root.showSettings
-                anchors.top: header.bottom
+                anchors.top: tabs.bottom
+                anchors.topMargin: (wallhavenFilters.visible ? wallhavenFilters.height : 0) + (statusLabel.visible ? statusLabel.height : 0)
                 anchors.bottom: footer.top
                 anchors.left: parent.left
                 anchors.right: parent.right
@@ -694,27 +1103,36 @@ Process {
                     id: grid
                     anchors.fill: parent
                     anchors.margins: 28
-                    // GridView fits N columns by floor(width / cellWidth), so
-                    // cellWidth must be <= width/columns or it silently rounds
-                    // down to one fewer column. Math.floor guards the edge case
-                    // where floating-point rounding makes it land a hair over.
-                    cellWidth: Math.floor(width / root.columns)
-                    cellHeight: Math.floor((cellWidth - root.gridSpacing) * 9 / 16) + root.gridSpacing
-                    model: imageModel
                     clip: true
                     boundsBehavior: Flickable.StopAtBounds
+                    cellWidth: Math.floor(width / root.columns)
+                    cellHeight: Math.floor((cellWidth - root.gridSpacing) * 9 / 16) + root.gridSpacing
+                    model: root.showWallhaven ? wallhavenModel : imageModel
+
+                    onContentYChanged: {
+                        if (root.showWallhaven && !root.wallhavenLoading && !root.wallhavenEnd) {
+                            var threshold = grid.contentHeight - grid.height - 200
+                            if (grid.contentY >= threshold)
+                                root.loadMoreWallhaven()
+                        }
+                    }
 
                     delegate: Item {
                         id: cell
                         required property string path
+                        required property string fullPath
+                        required property string wallhavenId
+                        required property string label
+                        required property string color
                         required property int index
+
                         width: grid.cellWidth - root.gridSpacing
                         height: grid.cellHeight - root.gridSpacing
 
                         Rectangle {
                             anchors.fill: parent
                             radius: root.hoveredIndex === cell.index ? 0 : 10
-                            color: "#141410"
+                            color: root.fieldBg
                             border.width: root.hoveredIndex === cell.index ? 2 : 0
                             border.color: root.accent
                             clip: true
@@ -723,7 +1141,7 @@ Process {
                                 id: thumb
                                 anchors.fill: parent
                                 anchors.margins: root.hoveredIndex === cell.index ? 2 : 0
-                                source: "file://" + cell.path
+                                source: root.imagePath(cell.path)
                                 fillMode: Image.PreserveAspectCrop
                                 asynchronous: true
                                 cache: true
@@ -736,7 +1154,7 @@ Process {
 
                                     Text {
                                         anchors.centerIn: parent
-                                        text: thumb.status === Image.Error ? "✕" : "…"
+                                        text: thumb.status === Image.Error ? "×" : "…"
                                         color: root.subtle
                                         font.pixelSize: 20
                                     }
@@ -750,14 +1168,8 @@ Process {
                                 height: 26
                                 visible: root.hoveredIndex === cell.index
                                 gradient: Gradient {
-                                    GradientStop {
-                                        position: 0.0
-                                        color: "#00000000"
-                                    }
-                                    GradientStop {
-                                        position: 1.0
-                                        color: "#c0000000"
-                                    }
+                                    GradientStop { position: 0.0; color: "#00000000" }
+                                    GradientStop { position: 1.0; color: "#c0000000" }
                                 }
 
                                 Text {
@@ -766,7 +1178,7 @@ Process {
                                     anchors.bottom: parent.bottom
                                     anchors.margins: 6
                                     elide: Text.ElideMiddle
-                                    text: root.baseName(cell.path)
+                                    text: cell.label || root.baseName(cell.path)
                                     color: root.fg
                                     font.pixelSize: 11
                                 }
@@ -778,20 +1190,26 @@ Process {
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onEntered: root.hoveredIndex = cell.index
-                            onExited: if (root.hoveredIndex === cell.index)
-                                root.hoveredIndex = -1
-                            onClicked: root.setWallpaper(cell.path)
+                            onExited: {
+                                if (root.hoveredIndex === cell.index)
+                                    root.hoveredIndex = -1
+                            }
+                            onClicked: {
+                                if (cell.wallhavenId)
+                                    root.applyWallhaven(cell.wallhavenId)
+                                else
+                                    root.setWallpaper(cell.path)
+                            }
                         }
                     }
                 }
             }
 
-            // ================================================= settings tab
             Item {
                 id: settingsTab
                 visible: root.showSettings
-                anchors.top: header.bottom
-                anchors.bottom: parent.bottom
+                anchors.top: tabs.bottom
+                anchors.bottom: footer.top
                 anchors.left: parent.left
                 anchors.right: parent.right
 
@@ -808,7 +1226,6 @@ Process {
                         width: parent.width
                         spacing: 28
 
-                        // --- WALLPAPER FOLDER ---
                         Column {
                             width: parent.width
                             spacing: 8
@@ -861,9 +1278,9 @@ Process {
                                     id: recursiveToggle
                                     checked: root.recursive
                                     onToggled: {
-                                        root.recursive = !recursiveToggle.checked;
-                                        root.setConfig("recursive", root.recursive ? "true" : "false");
-                                        root.reload();
+                                        root.recursive = recursiveToggle.checked
+                                        root.setConfig("recursive", root.recursive ? "true" : "false")
+                                        root.reload()
                                     }
                                 }
 
@@ -876,7 +1293,6 @@ Process {
                             }
                         }
 
-                        // --- KEYBINDS ---
                         Column {
                             width: parent.width
                             spacing: 8
@@ -916,7 +1332,6 @@ Process {
                             }
                         }
 
-                        // --- ROTATION ---
                         Column {
                             width: parent.width
                             spacing: 10
@@ -935,11 +1350,10 @@ Process {
                                 spacing: 8
 
                                 ToolBtn {
-                                    id: rotationToggleBtn
                                     width: 130
                                     height: parent.height
                                     text: root.rotationEnabled && root.rotationIntervalMin > 0 ? "Stop" : "Start"
-                                    iconText: root.rotationEnabled && root.rotationIntervalMin > 0 ? "\uF04D" : "\uEAD3" // fa-stop / cod-debug_start
+                                    iconText: root.rotationEnabled && root.rotationIntervalMin > 0 ? "\uF04D" : "\uEAD3"
                                     highlighted: root.rotationEnabled && root.rotationIntervalMin > 0
                                     onClicked: root.toggleRotation()
                                 }
@@ -948,7 +1362,7 @@ Process {
                                     width: 130
                                     height: parent.height
                                     text: root.rotationIntervalLabel()
-                                    iconText: "\uF01E" // fa-repeat (interval)
+                                    iconText: "\uF01E"
                                     tooltip: "Rotate every…"
                                     onClicked: root.cycleInterval()
                                 }
@@ -966,7 +1380,7 @@ Process {
                                     width: 150
                                     height: parent.height
                                     text: "Rotate now"
-                                    iconText: "\uF04E" // fa-forward (rotate now)
+                                    iconText: "\uF04E"
                                     onClicked: root.rotateNow()
                                 }
                             }
@@ -983,7 +1397,6 @@ Process {
                 }
             }
 
-            // ================================================= footer
             Item {
                 id: footer
                 width: parent.width
@@ -997,7 +1410,6 @@ Process {
                     border.color: "#1c1a14"
                 }
 
-                // Rotation controls — mirrored on the settings tab above.
                 Row {
                     visible: !root.showSettings
                     anchors.left: parent.left
@@ -1055,12 +1467,12 @@ Process {
                 }
             }
 
-            // --- Conflict popup ---
             Rectangle {
                 anchors.fill: parent
                 visible: root.takenPopupVisible
                 color: "#99000000"
                 z: 50
+
                 MouseArea {
                     anchors.fill: parent
                 }
@@ -1114,8 +1526,6 @@ Process {
         }
     }
 
-    // ============================================= components
-
     component ToolBtn: Item {
         id: btn
         property string text: ""
@@ -1128,7 +1538,6 @@ Process {
         width: implicitWidth
 
         Rectangle {
-            id: btnBg
             anchors.fill: parent
             radius: 8
             color: btn.highlighted ? root.accent : (btnArea.containsMouse ? "#232018" : root.fieldBg)
@@ -1162,9 +1571,7 @@ Process {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: {
-                    btn.clicked();
-                }
+            onClicked: btn.clicked()
         }
 
         ToolTip.visible: btnArea.containsMouse && !btnArea.pressed && btn.tooltip.length > 0
@@ -1181,7 +1588,7 @@ Process {
         height: 44
         onValueChanged: {
             if (!kfieldInput.activeFocus)
-                kfieldInput.text = kfield.value || "";
+                kfieldInput.text = kfield.value || ""
         }
 
         Rectangle {
@@ -1201,9 +1608,6 @@ Process {
             anchors.verticalCenter: parent.verticalCenter
         }
 
-        // Focus helper — declared FIRST so it sits BELOW the Row.
-        // Clicks on label/padding focus the field; clicks on field/button
-        // go to the Row (painted on top) naturally.
         MouseArea {
             id: kfArea
             anchors.fill: parent
