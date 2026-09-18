@@ -72,6 +72,7 @@ Item {
 
     ListModel {
         id: wallhavenModel
+        onCountChanged: Qt.callLater(root.maybeLoadMoreWallhaven)
     }
 
     property var commandQueue: []
@@ -284,6 +285,15 @@ Item {
         args.push(String(root.wallhavenPage), root.wallhavenCategories, root.wallhavenPurity, root.wallhavenSorting, root.wallhavenRatios, root.wallhavenAtleast)
         wallhavenProc.command = args
         wallhavenProc.running = true
+    }
+
+    function maybeLoadMoreWallhaven() {
+        if (!root.showWallhaven || root.wallhavenLoading || root.wallhavenEnd)
+            return
+        if (wallhavenProc.running)
+            return
+        if (grid.contentY + grid.height >= grid.contentHeight - 200)
+            root.loadMoreWallhaven()
     }
 
     function toggleCategory(bit) {
@@ -1158,13 +1168,9 @@ Item {
                     cellHeight: Math.floor((cellWidth - root.gridSpacing) * 9 / 16) + root.gridSpacing
                     model: root.showWallhaven ? wallhavenModel : imageModel
 
-                    onContentYChanged: {
-                        if (root.showWallhaven && !root.wallhavenLoading && !root.wallhavenEnd) {
-                            var threshold = grid.contentHeight - grid.height - 200
-                            if (grid.contentY >= threshold)
-                                root.loadMoreWallhaven()
-                        }
-                    }
+                    onContentYChanged: root.maybeLoadMoreWallhaven()
+                    onWidthChanged: Qt.callLater(root.maybeLoadMoreWallhaven)
+                    onHeightChanged: Qt.callLater(root.maybeLoadMoreWallhaven)
 
                     delegate: Item {
                         id: cell
