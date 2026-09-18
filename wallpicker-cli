@@ -315,9 +315,14 @@ wallhaven_photos() {
   wallhaven_request "" "$page" "$categories" "$purity" "$sorting" "$ratios" "$atleast" | jq -e 'if type == "object" and (.data | type == "array") then . else error("invalid Wallhaven response") end'
 }
 
-wallhaven_download() {
-  local id="${1:?usage: wallhaven download <id>}"
+wallhaven_fetch() {
+  local id="${1:?usage: wallhaven fetch <id> [dest_dir]}"
   [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || die "invalid wallpaper id: $id"
+  local dest="${2:-}"
+  [[ -n "$dest" ]] || dest="${WALLPICKER_DOWNLOAD_DIR:-}"
+  [[ -n "$dest" ]] || dest="$(cfg picturesDir)"
+  [[ -n "$dest" ]] || dest="$HOME/Pictures"
+  dest="${dest/#\~/$HOME}"
   local info response url ext mime tmp_path views favorites color
   response=$(curl --silent --show-error --fail-with-body --get "https://wallhaven.cc/api/v1/w/$id" | jq -c '.data // empty') || die "wallpaper id $id not found"
   [[ -n "$response" ]] || die "wallpaper id $id not found"
@@ -326,7 +331,7 @@ wallhaven_download() {
   ext=$(jq -r '.ext // "jpg"' <<< "$info")
   [[ "$ext" =~ ^(jpg|jpeg|png|webp)$ ]] || ext=jpg
   [[ -n "$url" ]] || die "wallpaper id $id has no download URL"
-  tmp_path="$HOME/.local/share/omarchy/themes/current/backgrounds/wallhaven-$id.$ext"
+  tmp_path="$dest/wallhaven-$id.$ext"
   mkdir -p "$(dirname "$tmp_path")"
   if ! curl --silent --show-error --fail-with-body --location --output "$tmp_path" "$url"; then
     rm -f "$tmp_path"
@@ -342,16 +347,25 @@ wallhaven_download() {
   color=$(jq -r '.color // ""' <<< "$info")
   jq -n --arg id "$id" --arg url "$url" --arg color "$color" --arg ext "$ext" --argjson views "$views" --argjson favorites "$favorites" \
     '{id: $id, url: $url, color: $color, ext: $ext, views: $views, favorites: $favorites}' > "$tmp_path.source.json"
-  omarchy theme bg set "$tmp_path" >/dev/null 2>&1 || omarchy-theme-bg-set "$tmp_path" >/dev/null 2>&1 || {
-    rm -f "$tmp_path" "$tmp_path.source.json"
-    die "failed to apply wallpaper"
-  }
-  echo "Downloaded and set: $tmp_path"
+  echo "Downloaded: $tmp_path"
+}
+
+wallhaven_download() {
+  local id="${1:?usage: wallhaven download <id>}"
+  wallhaven_fetch "$id"
 }
 
 wallhaven_apply() {
   local id="${1:?usage: wallhaven apply <id>}"
-  wallhaven_download "$id"
+  local out path
+  out=$(wallhaven_fetch "$id") || exit $?
+  path=${out#Downloaded: }
+  [[ -n "$path" ]] || die "failed to apply wallpaper $id"
+  omarchy theme bg set "$path" >/dev/null 2>&1 || omarchy-theme-bg-set "$path" >/dev/null 2>&1 || {
+    rm -f "$path" "$path.source.json"
+    die "failed to apply wallpaper"
+  }
+  echo "Downloaded and set: $path"
 }
 
 wallhaven_random() {
@@ -392,6 +406,10 @@ wallhaven_random() {
 wallhaven_prune() {
   local keep_last="${1:-20}"
   local theme_dir="$HOME/.local/share/omarchy/themes/current/backgrounds"
+  local pictures_dir="${WALLPICKER_DOWNLOAD_DIR:-}"
+  [[ -n "$pictures_dir" ]] || pictures_dir="$(cfg picturesDir)"
+  [[ -n "$pictures_dir" ]] || pictures_dir="$HOME/Pictures"
+  pictures_dir="${pictures_dir/#\~/$HOME}"
   local count
   count=$(ls -1 "$theme_dir"/wallhaven-* 2>/dev/null | wc -l)
   [[ "$count" -gt "$keep_last" ]] || return 0
@@ -408,7 +426,7 @@ wallhaven_tags() {
 
 wallhaven_save() {
   local id="${1:?usage: wallpicker wallhaven save <id>}"
-  wallhaven_download "$id"
+  wallhaven_fetch "$id"
 }
 
 wallhaven_current() {
@@ -478,6 +496,7 @@ case "${1:-help}" in
       search)   shift; wallhaven_search "${1:-}" "${2:-1}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" ;;
       photos)   shift; wallhaven_photos "${1:-1}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
       random)   wallhaven_random ;;
+      fetch)    shift; wallhaven_fetch "${1:-}" "${2:-}" ;;
       download) shift; wallhaven_download "${1:-}" ;;
       save)     shift; wallhaven_save "${1:-}" ;;
       apply)    shift; wallhaven_apply "${1:-}" ;;
@@ -498,13 +517,14 @@ wallpicker — Wallpaper picker and rotation for Omarchy
   wallpicker desktop install|remove  Install/remove .desktop launcher entry
   wallhaven search <query> [page]    Search Wallhaven API, output JSON
   wallhaven photos [page]            Browse Wallhaven (no query)
-  wallhaven random                   Download a random wallpaper
-  wallhaven download <id>            Download a wallpaper by id
+  wallhaven random                   Download and set a random wallpaper
+  wallhaven fetch <id> [dest_dir]    Download a wallpaper (no apply; default picturesDir)
+  wallhaven download <id>            Download a wallpaper (no apply)
   wallhaven apply <id>               Download + set as wallpaper
+  wallhaven save <id>                Download a wallpaper (no apply)
   wallhaven prune                    Keep only last N wallhaven files
   wallhaven current                  Show current wallhaven wallpaper info
   wallhaven tags                     List curated tag shortcuts
-  wallhaven save <id>                Download and set a wallpaper by id
   wallhaven config get|set           Read or edit wallhaven config
 USAGE
     ;;

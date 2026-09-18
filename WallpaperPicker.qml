@@ -40,6 +40,12 @@ Item {
     property string wallhavenRatios: "16x9"
     property string wallhavenAtleast: ""
 
+    property bool previewVisible: false
+    property string previewImageSource: ""
+    property string previewLabel: ""
+    property string previewWallhavenId: ""
+    property bool previewCloseAfterDownload: false
+
     property int wallhavenRequestSerial: 0
     property int wallhavenActiveRequest: 0
 
@@ -116,6 +122,26 @@ Item {
         root.statusText = "Downloading Wallhaven wallpaper…"
         wallhavenApplyProc.command = [root.cliPath, "wallhaven", "apply", id]
         wallhavenApplyProc.running = true
+    }
+
+    function openPreview(cell) {
+        root.previewImageSource = cell.hasOwnProperty("fullPath") && cell.fullPath ? cell.fullPath : cell.path
+        root.previewLabel = cell.label || ""
+        root.previewWallhavenId = cell.wallhavenId || ""
+        root.previewVisible = true
+    }
+
+    function closePreview() {
+        root.previewVisible = false
+    }
+
+    function downloadWallhaven(id, closeAfter) {
+        if (!id)
+            return
+        root.previewCloseAfterDownload = !!closeAfter
+        root.statusText = "Downloading Wallhaven wallpaper…"
+        wallhavenDownloadProc.command = [root.cliPath, "wallhaven", "fetch", id]
+        wallhavenDownloadProc.running = true
     }
 
     function toggleRotation() {
@@ -679,6 +705,29 @@ Item {
     }
 
     Process {
+        id: wallhavenDownloadProc
+        command: []
+        stdout: StdioCollector {
+            id: wallhavenDownloadStdout
+            waitForEnd: true
+        }
+        onExited: function (code) {
+            if (code === 0) {
+                var result = String(wallhavenDownloadStdout.text).trim()
+                root.statusText = result || "Wallpaper downloaded"
+                if (root.previewCloseAfterDownload) {
+                    root.previewCloseAfterDownload = false
+                    root.previewVisible = false
+                }
+                root.reload()
+            } else {
+                var message = String(wallhavenDownloadStdout.text).trim()
+                root.statusText = message || "Failed to download wallpaper"
+            }
+        }
+    }
+
+    Process {
         id: configProcess
         command: []
         stdout: StdioCollector {
@@ -1195,10 +1244,37 @@ Item {
                                     root.hoveredIndex = -1
                             }
                             onClicked: {
-                                if (cell.wallhavenId)
-                                    root.applyWallhaven(cell.wallhavenId)
-                                else
-                                    root.setWallpaper(cell.path)
+                                root.openPreview(cell)
+                            }
+
+                            Row {
+                                anchors.top: parent.top
+                                anchors.right: parent.right
+                                anchors.margins: 10
+                                spacing: 6
+                                visible: root.hoveredIndex === cell.index
+
+                                ToolBtn {
+                                    width: 52
+                                    height: 24
+                                    text: "Apply"
+                                    tooltip: cell.wallhavenId ? "Apply this wallpaper" : "Set as wallpaper"
+                                    onClicked: {
+                                        if (cell.wallhavenId)
+                                            root.applyWallhaven(cell.wallhavenId)
+                                        else
+                                            root.setWallpaper(cell.path)
+                                    }
+                                }
+
+                                ToolBtn {
+                                    width: 78
+                                    height: 24
+                                    text: "Download"
+                                    tooltip: "Download to pictures directory (no apply)"
+                                    visible: cell.wallhavenId !== ""
+                                    onClicked: root.downloadWallhaven(cell.wallhavenId, false)
+                                }
                             }
                         }
                     }
@@ -1649,6 +1725,118 @@ Item {
                 text: "Apply"
                 tooltip: "Write this keybind to Hyprland"
                 onClicked: root.commitKeybind(kfield.configKey, kfieldInput)
+            }
+        }
+    }
+
+    FloatingWindow {
+        id: preview
+        visible: root.previewVisible
+        title: "Wallpaper Preview"
+        color: root.bg
+        implicitWidth: 960
+        implicitHeight: 640
+        minimumSize: Qt.size(480, 320)
+        onVisibleChanged: {
+            if (!visible)
+                root.previewVisible = false
+        }
+
+        Item {
+            id: previewCatcher
+            anchors.fill: parent
+            focus: true
+            Keys.priority: Keys.BeforeItem
+            Keys.onPressed: function (event) {
+                if (event.key === Qt.Key_Escape) {
+                    root.previewVisible = false
+                    event.accepted = true
+                }
+            }
+
+            Rectangle {
+                anchors.fill: parent
+                color: root.bg
+            }
+
+            Image {
+                id: previewImage
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: previewFooter.top
+                anchors.margins: 24
+                source: root.previewImageSource ? root.imagePath(root.previewImageSource) : ""
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+                smooth: true
+
+                Rectangle {
+                    visible: previewImage.status !== Image.Ready
+                    anchors.fill: parent
+                    color: root.fieldBg
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: previewImage.status === Image.Error ? "Could not load preview" : "Loading preview…"
+                        color: root.subtle
+                        font.pixelSize: 13
+                    }
+                }
+            }
+
+            Item {
+                id: previewFooter
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: 64
+
+                Rectangle {
+                    anchors.fill: parent
+                    color: root.fieldBg
+
+                    Text {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 24
+                        anchors.verticalCenter: parent.verticalCenter
+                        elide: Text.ElideMiddle
+                        text: root.previewLabel || "Wallpaper preview"
+                        color: root.muted
+                        font.pixelSize: 12
+                    }
+                }
+
+                Row {
+                    anchors.right: parent.right
+                    anchors.rightMargin: 20
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 10
+
+                    ToolBtn {
+                        width: 84
+                        height: 34
+                        text: "Apply"
+                        tooltip: root.previewWallhavenId ? "Download and set as wallpaper" : "Set as wallpaper"
+                        onClicked: {
+                            root.previewCloseAfterDownload = false
+                            if (root.previewWallhavenId)
+                                root.applyWallhaven(root.previewWallhavenId)
+                            else
+                                root.setWallpaper(root.previewImageSource)
+                            root.previewVisible = false
+                        }
+                    }
+
+                    ToolBtn {
+                        width: 96
+                        height: 34
+                        text: "Download"
+                        tooltip: "Download to pictures directory (no apply) — closes preview"
+                        visible: root.previewWallhavenId !== ""
+                        onClicked: root.downloadWallhaven(root.previewWallhavenId, true)
+                    }
+                }
             }
         }
     }
