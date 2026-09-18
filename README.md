@@ -1,15 +1,50 @@
 # Wallpaper Picker
-<img width="2560" height="1440" alt="Preview" src="Preview.png" />
 
 A fullscreen Omarchy wallpaper picker that grids every image in your
 Pictures folder — click one to set it as your wallpaper, or let the
 built-in rotation timer cycle them automatically. Opens as a regular
 app window from the launcher or a keybind.
 
+![Wallpaper grid](screenshot-2026-09-18_15-19-36.png)
+![Wallpaper preview](screenshot-2026-09-18_15-20-15.png)
+
+This is a maintained fork of [maiosx/wallpicker](https://github.com/maiosx/wallpicker),
+the plugin originally written by **maiosx**. It adds a full
+[Wallhaven](https://wallhaven.cc) integration (see below) on top of the
+original local-folder picker, plus a few robustness fixes.
+
+## What's new in this fork
+
+- **Wallhaven integration** — browse Wallhaven straight from the picker:
+  live search, General/Anime/People category toggles, purity filter
+  (SFW / Sketchy), and sorting (Relevance / Top / Latest / *Toplist* /
+  *Random*).
+- **Curated tag chips** — one click to filter by landscape, nature, anime,
+  minimal, dark, cyberpunk, 4k or space, and they sit on their own row so
+  the filter bar still fits narrow windows.
+- **Any aspect ratio** — the ratio button also offers "Any" (unfiltered),
+  instead of only fixed ratios, and the cycle order is persisted to config.
+- **Infinite scroll** — results auto-load the next Wallhaven page whenever
+  the grid has room for more, including tiny windows.
+- **Full-resolution preview** — hover any thumbnail for an **Apply** /
+  **Download** overlay; download saves the full-res image to your Pictures
+  folder and refreshes the local grid.
+- **Narrow-window layout** — the Wallhaven filter bar wraps its tag chips
+  onto a second line.
+- **Config sync fix** — "Any" ratio, sorting and tag selections now write
+  through to `~/.config/omarchy/wallpicker.json` reliably (and reload from
+  disk without restart).
+- **Desktop-entry fix** — the launcher entry is located from the plugin's
+  own path instead of a stripped manifest field, so it installs correctly
+  on current Omarchy releases.
+
+Everything the original did — folder grid, rotation, keybinds, IPC — still
+works unchanged.
+
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/maiosx/wallpicker.git --enable --yes
+omarchy plugin add https://github.com/redeyes-jpg/wallpaper-picker.git --enable --yes
 ```
 
 No bar widget — the plugin registers itself in the app launcher
@@ -121,3 +156,9 @@ runs automatically.
   matches the pattern Omarchy's own plugins use, but if your Quickshell
   version's IPC API differs slightly, check `qs.Io`/`Quickshell.Io`
   docs and adjust `listProc`.
+
+## Credits
+
+Original author: **maiosx** — [maiosx/wallpicker](https://github.com/maiosx/wallpicker)
+(MIT). This fork lives at
+[redeyes-jpg/wallpaper-picker](https://github.com/redeyes-jpg/wallpaper-picker).
