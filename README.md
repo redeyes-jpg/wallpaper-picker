@@ -11,8 +11,7 @@ app window from the launcher or a keybind.
 This is a maintained fork of [maiosx/wallpicker](https://github.com/maiosx/wallpicker),
 the plugin originally written by **maiosx**. It adds a full
 [Wallhaven](https://wallhaven.cc) integration (see below) on top of the
-original local-folder picker, plus a few robustness fixes. It was built
-with an AI coding agent.
+original local-folder picker, plus a few robustness fixes.
 
 ## What's new in this fork
 
@@ -168,3 +167,5 @@ runs automatically.
 Original author: **maiosx** — [maiosx/wallpicker](https://github.com/maiosx/wallpicker)
 (MIT). This fork lives at
 [redeyes-jpg/wallpaper-picker](https://github.com/redeyes-jpg/wallpaper-picker).
+
+Built with an AI coding agent.
