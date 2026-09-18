@@ -15,6 +15,7 @@ Item {
     property var manifest: null
 
     readonly property string cliPath: Qt.resolvedUrl("wallpicker-cli").toString().replace(/^file:\/\//, "")
+    readonly property string desktopTemplate: Qt.resolvedUrl("wallpicker.desktop").toString().replace(/^file:\/\//, "")
     readonly property string configPath: Quickshell.env("HOME") + "/.config/omarchy/wallpicker.json"
     readonly property string statePath: Quickshell.env("HOME") + "/.local/state/omarchy/wallpicker/rotation.json"
 
@@ -171,11 +172,10 @@ Item {
     // Component.onCompleted, and a binding on it has not re-evaluated by the
     // time this fires, so the paths are built here rather than bound.
     onManifestChanged: {
-        var dir = manifest && manifest.__sourceDir;
-        if (installed || !dir)
+        if (installed || root.desktopTemplate.length === 0)
             return;
         installed = true;
-        Quickshell.execDetached(["sh", "-c", installScript, "sh", dir + "/wallpicker.desktop"]);
+        Quickshell.execDetached(["sh", "-c", installScript, "sh", root.desktopTemplate]);
     }
 
     readonly property string installScript: '[ -f "$1" ] || exit 0\n' + 'dest="$HOME/.local/share/applications/wallpicker.desktop"\n' + 'if [ -e "$dest" ] && ! grep -q "X-Wallpicker-Managed=true" "$dest"; then exit 0; fi\n' + 'mkdir -p "$(dirname "$dest")" || exit 0\n' + 'tmp="$dest.wallpicker.new"\n' + 'sed "s|@ICON@|preferences-desktop-wallpaper|" "$1" > "$tmp" || exit 0\n' + 'if cmp -s "$tmp" "$dest"; then rm -f "$tmp"; else mv -f "$tmp" "$dest"; fi\n'
