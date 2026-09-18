@@ -988,151 +988,149 @@ Item {
                 id: wallhavenFilters
                 visible: root.showWallhaven && !root.showSettings
                 width: parent.width
-                height: 48
+                height: 88
                 anchors.top: tabs.bottom
 
-                Flickable {
-                    anchors.fill: parent
-                    contentWidth: filtersRow.implicitWidth
-                    contentHeight: parent.height
-                    clip: true
-                    boundsBehavior: Flickable.StopAtBounds
+                Row {
+                    id: filtersRow
+                    anchors.left: parent.left
+                    anchors.leftMargin: 28
+                    anchors.top: parent.top
+                    anchors.topMargin: 8
+                    height: 32
+                    spacing: 10
 
-                    Row {
-                        id: filtersRow
-                        anchors.left: parent.left
-                        anchors.leftMargin: 28
-                        anchors.verticalCenter: parent.verticalCenter
+                    TextField {
+                        id: wallhavenSearchField
+                        width: 220
                         height: 32
-                        spacing: 10
-
-                        TextField {
-                            id: wallhavenSearchField
-                            width: 220
-                            height: 32
-                            placeholderText: "Search Wallhaven…"
-                            placeholderTextColor: root.subtle
-                            color: root.fg
-                            font.pixelSize: 12
-                            selectByMouse: true
-                            background: Rectangle {
-                                radius: 6
-                                color: root.fieldBg
-                                border.width: 1
-                                border.color: wallhavenSearchField.activeFocus ? root.accent : root.fieldBorder
-                            }
-                            onAccepted: {
-                                root.wallhavenQuery = text.trim()
-                                root.resetWallhaven()
-                            }
+                        placeholderText: "Search Wallhaven…"
+                        placeholderTextColor: root.subtle
+                        color: root.fg
+                        font.pixelSize: 12
+                        selectByMouse: true
+                        background: Rectangle {
+                            radius: 6
+                            color: root.fieldBg
+                            border.width: 1
+                            border.color: wallhavenSearchField.activeFocus ? root.accent : root.fieldBorder
                         }
-
-                        Row {
-                            spacing: 6
-
-                            ToolBtn {
-                                text: "General"
-                                width: 70
-                                height: 32
-                                highlighted: (parseInt(root.wallhavenCategories, 10) & 4) !== 0
-                                onClicked: root.toggleCategory(4)
-                            }
-
-                            ToolBtn {
-                                text: "Anime"
-                                width: 70
-                                height: 32
-                                highlighted: (parseInt(root.wallhavenCategories, 10) & 2) !== 0
-                                onClicked: root.toggleCategory(2)
-                            }
-
-                            ToolBtn {
-                                text: "People"
-                                width: 70
-                                height: 32
-                                highlighted: (parseInt(root.wallhavenCategories, 10) & 1) !== 0
-                                onClicked: root.toggleCategory(1)
-                            }
-                        }
-
-                        Row {
-                            id: tagChipsRow
-                            spacing: 6
-
-                            ToolBtn { text: "landscape"; width: 65; height: 32; highlighted: root.hasWallhavenTag("landscape"); tooltip: "Filter by: landscape"; onClicked: root.toggleWallhavenTag("landscape") }
-                            ToolBtn { text: "nature"; width: 65; height: 32; highlighted: root.hasWallhavenTag("nature"); tooltip: "Filter by: nature"; onClicked: root.toggleWallhavenTag("nature") }
-                            ToolBtn { text: "anime"; width: 65; height: 32; highlighted: root.hasWallhavenTag("anime"); tooltip: "Filter by: anime"; onClicked: root.toggleWallhavenTag("anime") }
-                            ToolBtn { text: "minimal"; width: 65; height: 32; highlighted: root.hasWallhavenTag("minimal"); tooltip: "Filter by: minimal"; onClicked: root.toggleWallhavenTag("minimal") }
-                            ToolBtn { text: "dark"; width: 65; height: 32; highlighted: root.hasWallhavenTag("dark"); tooltip: "Filter by: dark"; onClicked: root.toggleWallhavenTag("dark") }
-                            ToolBtn { text: "cyberpunk"; width: 65; height: 32; highlighted: root.hasWallhavenTag("cyberpunk"); tooltip: "Filter by: cyberpunk"; onClicked: root.toggleWallhavenTag("cyberpunk") }
-                            ToolBtn { text: "4k"; width: 65; height: 32; highlighted: root.hasWallhavenTag("4k"); tooltip: "Filter by: 4k"; onClicked: root.toggleWallhavenTag("4k") }
-                            ToolBtn { text: "space"; width: 65; height: 32; highlighted: root.hasWallhavenTag("space"); tooltip: "Filter by: space"; onClicked: root.toggleWallhavenTag("space") }
-                        }
-
-                        ToolBtn {
-                            width: 80
-                            height: 32
-                            text: root.purityLabel()
-                            tooltip: "Purity"
-                            onClicked: root.cyclePurity()
-                        }
-
-                        ToolBtn {
-                            id: sortBtn
-                            width: 110
-                            height: 32
-                            text: root.sortingLabel()
-                            tooltip: "Sort by"
-                            onClicked: root.cycleSorting()
-                        }
-
-                        ToolBtn {
-                            id: randomSortBtn
-                            width: 72
-                            height: 32
-                            text: "Random"
-                            tooltip: "Sort: Random"
-                            highlighted: root.wallhavenSorting === "random"
-                            visible: true
-                            onClicked: {
-                                root.wallhavenSorting = "random"
-                                root.setWallhavenConfig("sorting", "random")
-                                root.resetWallhaven()
-                            }
-                        }
-
-                        ToolBtn {
-                            id: toplistSortBtn
-                            width: 72
-                            height: 32
-                            text: "Toplist"
-                            tooltip: "Sort: Toplist"
-                            highlighted: root.wallhavenSorting === "toplist"
-                            visible: true
-                            onClicked: {
-                                root.wallhavenSorting = "toplist"
-                                root.setWallhavenConfig("sorting", "toplist")
-                                root.resetWallhaven()
-                            }
-                        }
-
-                        ToolBtn {
-                            id: ratioBtn
-                            width: 70
-                            height: 32
-                            text: root.ratioLabel()
-                            tooltip: "Aspect ratio"
-                            onClicked: root.cycleRatios()
-                        }
-
-                        ToolBtn {
-                            width: 110
-                            height: 32
-                            text: root.resolutionLabel()
-                            tooltip: "Minimum resolution"
-                            onClicked: root.cycleResolution()
+                        onAccepted: {
+                            root.wallhavenQuery = text.trim()
+                            root.resetWallhaven()
                         }
                     }
+
+                    Row {
+                        spacing: 6
+
+                        ToolBtn {
+                            text: "General"
+                            width: 70
+                            height: 32
+                            highlighted: (parseInt(root.wallhavenCategories, 10) & 4) !== 0
+                            onClicked: root.toggleCategory(4)
+                        }
+
+                        ToolBtn {
+                            text: "Anime"
+                            width: 70
+                            height: 32
+                            highlighted: (parseInt(root.wallhavenCategories, 10) & 2) !== 0
+                            onClicked: root.toggleCategory(2)
+                        }
+
+                        ToolBtn {
+                            text: "People"
+                            width: 70
+                            height: 32
+                            highlighted: (parseInt(root.wallhavenCategories, 10) & 1) !== 0
+                            onClicked: root.toggleCategory(1)
+                        }
+                    }
+
+                    ToolBtn {
+                        width: 80
+                        height: 32
+                        text: root.purityLabel()
+                        tooltip: "Purity"
+                        onClicked: root.cyclePurity()
+                    }
+
+                    ToolBtn {
+                        id: sortBtn
+                        width: 110
+                        height: 32
+                        text: root.sortingLabel()
+                        tooltip: "Sort by"
+                        onClicked: root.cycleSorting()
+                    }
+
+                    ToolBtn {
+                        id: randomSortBtn
+                        width: 72
+                        height: 32
+                        text: "Random"
+                        tooltip: "Sort: Random"
+                        highlighted: root.wallhavenSorting === "random"
+                        visible: true
+                        onClicked: {
+                            root.wallhavenSorting = "random"
+                            root.setWallhavenConfig("sorting", "random")
+                            root.resetWallhaven()
+                        }
+                    }
+
+                    ToolBtn {
+                        id: toplistSortBtn
+                        width: 72
+                        height: 32
+                        text: "Toplist"
+                        tooltip: "Sort: Toplist"
+                        highlighted: root.wallhavenSorting === "toplist"
+                        visible: true
+                        onClicked: {
+                            root.wallhavenSorting = "toplist"
+                            root.setWallhavenConfig("sorting", "toplist")
+                            root.resetWallhaven()
+                        }
+                    }
+
+                    ToolBtn {
+                        id: ratioBtn
+                        width: 70
+                        height: 32
+                        text: root.ratioLabel()
+                        tooltip: "Aspect ratio"
+                        onClicked: root.cycleRatios()
+                    }
+
+                    ToolBtn {
+                        width: 110
+                        height: 32
+                        text: root.resolutionLabel()
+                        tooltip: "Minimum resolution"
+                        onClicked: root.cycleResolution()
+                    }
+                }
+
+                Row {
+                    id: tagChipsRow
+                    anchors.left: parent.left
+                    anchors.leftMargin: 28
+                    anchors.top: filtersRow.bottom
+                    anchors.topMargin: 8
+                    height: 32
+                    spacing: 6
+
+                    ToolBtn { text: "landscape"; width: 65; height: 32; highlighted: root.hasWallhavenTag("landscape"); tooltip: "Filter by: landscape"; onClicked: root.toggleWallhavenTag("landscape") }
+                    ToolBtn { text: "nature"; width: 65; height: 32; highlighted: root.hasWallhavenTag("nature"); tooltip: "Filter by: nature"; onClicked: root.toggleWallhavenTag("nature") }
+                    ToolBtn { text: "anime"; width: 65; height: 32; highlighted: root.hasWallhavenTag("anime"); tooltip: "Filter by: anime"; onClicked: root.toggleWallhavenTag("anime") }
+                    ToolBtn { text: "minimal"; width: 65; height: 32; highlighted: root.hasWallhavenTag("minimal"); tooltip: "Filter by: minimal"; onClicked: root.toggleWallhavenTag("minimal") }
+                    ToolBtn { text: "dark"; width: 65; height: 32; highlighted: root.hasWallhavenTag("dark"); tooltip: "Filter by: dark"; onClicked: root.toggleWallhavenTag("dark") }
+                    ToolBtn { text: "cyberpunk"; width: 65; height: 32; highlighted: root.hasWallhavenTag("cyberpunk"); tooltip: "Filter by: cyberpunk"; onClicked: root.toggleWallhavenTag("cyberpunk") }
+                    ToolBtn { text: "4k"; width: 65; height: 32; highlighted: root.hasWallhavenTag("4k"); tooltip: "Filter by: 4k"; onClicked: root.toggleWallhavenTag("4k") }
+                    ToolBtn { text: "space"; width: 65; height: 32; highlighted: root.hasWallhavenTag("space"); tooltip: "Filter by: space"; onClicked: root.toggleWallhavenTag("space") }
                 }
             }
 
