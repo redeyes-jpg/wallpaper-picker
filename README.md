@@ -15,6 +15,11 @@ original local-folder picker, plus a few robustness fixes.
 
 ## What's new in this fork
 
+- **Wallpaper rotation** — a built-in timer cycles your wallpapers
+  randomly or in folder order (15m → Daily), survives shell restarts,
+  and is controllable from the toolbar, the Settings tab, keybinds or IPC.
+- **Launcher app, not a bar widget** — the plugin opens as a regular
+  app window from the app grid or a keybind, with no bar widget.
 - **Wallhaven integration** — browse Wallhaven straight from the picker:
   live search, General/Anime/People category toggles, purity filter
   (SFW / Sketchy), and sorting (Relevance / Top / Latest / *Toplist* /
