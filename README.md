@@ -29,6 +29,10 @@ original local-folder picker, plus a few robustness fixes.
   the filter bar still fits narrow windows.
 - **Any aspect ratio** — the ratio button also offers "Any" (unfiltered),
   instead of only fixed ratios, and the cycle order is persisted to config.
+- **Reset filters** — one click clears the search/tag query and returns
+  aspect ratio and resolution to "Any".
+- **Honest result count** — the status line shows `N of TOTAL` Wallhaven
+  results, so a narrow filter no longer looks like a result cap.
 - **Infinite scroll** — results auto-load the next Wallhaven page whenever
   the grid has room for more, including tiny windows.
 - **Full-resolution preview** — hover any thumbnail for an **Apply** /

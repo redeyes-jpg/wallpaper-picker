@@ -292,7 +292,7 @@ wallhaven_config_set() {
 # ---------------------------------------------------------------- wallhaven API
 
 wallhaven_request() {
-  local query="${1:-}" page="${2:-1}" categories="${3:-111}" purity="${4:-100}" sorting="${5:-relevance}" ratios="${6-16x9}" atleast="${7-}" api_key="${WALLHAVEN_API_KEY:-}"
+  local query="${1:-}" page="${2:-1}" categories="${3:-111}" purity="${4:-100}" sorting="${5:-relevance}" ratios="${6-}" atleast="${7-}" api_key="${WALLHAVEN_API_KEY:-}"
   local -a curl_args=(--silent --show-error --fail-with-body --get "https://wallhaven.cc/api/v1/search"
     --data-urlencode "page=$page"
     --data-urlencode "categories=$categories"

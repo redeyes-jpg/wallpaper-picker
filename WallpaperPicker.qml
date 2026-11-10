@@ -33,11 +33,12 @@ Item {
     property bool showWallhaven: false
     property int wallhavenPage: 1
     property bool wallhavenEnd: false
+    property int wallhavenTotal: 0
     property string wallhavenQuery: ""
     property string wallhavenCategories: "111"
     property string wallhavenPurity: "100"
     property string wallhavenSorting: "date_added"
-    property string wallhavenRatios: "16x9"
+    property string wallhavenRatios: ""
     property string wallhavenAtleast: ""
 
     property bool previewVisible: false
@@ -48,6 +49,7 @@ Item {
 
     property int wallhavenRequestSerial: 0
     property int wallhavenActiveRequest: 0
+    property bool wallhavenRestartPending: false
 
     property var pendingConfigKey: ""
     property var pendingCombo: ""
@@ -211,7 +213,7 @@ Item {
 
     function ratiosValue(value) {
         var options = ["", "16x9", "16x10", "21x9", "32x9", "4x3", "5x4", "3x2"]
-        return options.indexOf(value) >= 0 ? value : "16x9"
+        return options.indexOf(value) >= 0 ? value : ""
     }
 
     function resolutionValue(value) {
@@ -248,15 +250,30 @@ Item {
     }
 
     function resetWallhaven() {
-        if (wallhavenProc.running)
-            wallhavenProc.running = false
         root.wallhavenRequestSerial += 1
-        root.wallhavenActiveRequest = root.wallhavenRequestSerial
         root.wallhavenPage = 1
         wallhavenModel.clear()
+        root.wallhavenTotal = 0
         root.wallhavenEnd = false
-        root.wallhavenLoading = false
+        root.wallhavenLoading = true
+        if (wallhavenProc.running) {
+            // Let onExited restart cleanly; killing the process would otherwise
+            // report a bogus "Wallhaven request failed".
+            root.wallhavenRestartPending = true
+            wallhavenProc.running = false
+            return
+        }
         root.loadWallhaven()
+    }
+
+    function resetWallhavenFilters() {
+        wallhavenSearchField.text = ""
+        root.wallhavenQuery = ""
+        root.wallhavenRatios = ""
+        root.wallhavenAtleast = ""
+        root.setWallhavenConfig("ratios", "")
+        root.setWallhavenConfig("atleast", "")
+        root.resetWallhaven()
     }
 
     function loadWallhaven() {
@@ -292,7 +309,11 @@ Item {
             return
         if (wallhavenProc.running)
             return
-        if (grid.contentY + grid.height >= grid.contentHeight - 200)
+        // Use the model size instead of grid.contentHeight: contentHeight can be
+        // stale right after appending a page and would trigger runaway loading.
+        var rows = Math.ceil(wallhavenModel.count / Math.max(1, root.columns))
+        var expectedHeight = rows * grid.cellHeight
+        if (grid.contentY + grid.height >= expectedHeight - 200)
             root.loadMoreWallhaven()
     }
 
@@ -666,14 +687,24 @@ Item {
             waitForEnd: true
         }
         onExited: function (code) {
-            if (root.wallhavenActiveRequest !== root.wallhavenRequestSerial)
+            if (root.wallhavenActiveRequest !== root.wallhavenRequestSerial) {
+                if (root.wallhavenRestartPending) {
+                    root.wallhavenRestartPending = false
+                    if (root.showWallhaven)
+                        root.loadWallhaven()
+                }
                 return
+            }
             root.wallhavenLoading = false
             if (code !== 0) {
                 root.statusText = "Wallhaven request failed"
                 return
             }
-            var rows = Model.photoRows(Model.parseJson(wallhavenStdout.text, {}, 16777216))
+            var payload = Model.parseJson(wallhavenStdout.text, {}, 16777216)
+            var rows = Model.photoRows(payload)
+            var total = payload && payload.meta && payload.meta.total !== undefined ? Number(payload.meta.total) : 0
+            if (!isFinite(total))
+                total = 0
             if (root.wallhavenPage === 1)
                 wallhavenModel.clear()
             for (var i = 0; i < rows.length; i++) {
@@ -686,13 +717,17 @@ Item {
                     color: row.color
                 })
             }
+            root.wallhavenTotal = total
             if (rows.length === 0) {
                 root.wallhavenEnd = true
                 if (wallhavenModel.count === 0)
                     root.statusText = "No results found"
             } else {
-                root.wallhavenEnd = rows.length < 24
-                root.statusText = wallhavenModel.count + " Wallhaven results"
+                root.wallhavenEnd = rows.length < 24 || (total > 0 && wallhavenModel.count >= total)
+                if (total > 0)
+                    root.statusText = wallhavenModel.count + " of " + total + " Wallhaven results"
+                else
+                    root.statusText = wallhavenModel.count + " Wallhaven results"
             }
         }
     }
@@ -988,7 +1023,7 @@ Item {
                 id: wallhavenFilters
                 visible: root.showWallhaven && !root.showSettings
                 width: parent.width
-                height: 88
+                height: 128
                 anchors.top: tabs.bottom
 
                 Row {
@@ -1056,6 +1091,16 @@ Item {
                         tooltip: "Purity"
                         onClicked: root.cyclePurity()
                     }
+                }
+
+                Row {
+                    id: filtersRow2
+                    anchors.left: parent.left
+                    anchors.leftMargin: 28
+                    anchors.top: filtersRow.bottom
+                    anchors.topMargin: 8
+                    height: 32
+                    spacing: 10
 
                     ToolBtn {
                         id: sortBtn
@@ -1112,13 +1157,21 @@ Item {
                         tooltip: "Minimum resolution"
                         onClicked: root.cycleResolution()
                     }
+
+                    ToolBtn {
+                        width: 80
+                        height: 32
+                        text: "Reset"
+                        tooltip: "Clear search, aspect ratio and resolution"
+                        onClicked: root.resetWallhavenFilters()
+                    }
                 }
 
                 Row {
                     id: tagChipsRow
                     anchors.left: parent.left
                     anchors.leftMargin: 28
-                    anchors.top: filtersRow.bottom
+                    anchors.top: filtersRow2.bottom
                     anchors.topMargin: 8
                     height: 32
                     spacing: 6
