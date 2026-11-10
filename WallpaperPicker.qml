@@ -1533,15 +1533,25 @@ Item {
                     onWheel: function (wheel) {
                         if (wheel.modifiers & Qt.ControlModifier) {
                             wheel.accepted = true
-                            var delta = wheel.angleDelta.y > 0 ? 1 : -1
+                            var delta = wheel.angleDelta.y > 0 ? -1 : 1
                             var newColumns = Math.max(2, Math.min(12, root.columns + delta))
                             if (newColumns !== root.columns) {
                                 root.setConfig("columns", String(newColumns))
                                 root.statusText = "Columns: " + newColumns
+                                // Re-clamp contentY after layout adjusts originY
+                                Qt.callLater(function() {
+                                    var minY = grid.originY
+                                    var maxY = Math.max(minY, grid.originY + grid.contentHeight - grid.height)
+                                    grid.contentY = Math.max(minY, Math.min(maxY, grid.contentY))
+                                })
                             }
                         } else {
-                            // Direct proportional scrolling — fast spin = fast scroll
-                            grid.contentY -= wheel.angleDelta.y / 120 * 48
+                            // Clamp to originY-based range (originY shifts during relayout)
+                            var step = wheel.angleDelta.y / 120 * 48
+                            var newY = grid.contentY - step
+                            var minY = grid.originY
+                            var maxY = Math.max(minY, grid.originY + grid.contentHeight - grid.height)
+                            grid.contentY = Math.max(minY, Math.min(maxY, newY))
                         }
                     }
                 }
