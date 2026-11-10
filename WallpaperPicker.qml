@@ -1023,6 +1023,7 @@ Item {
         root.configData = config
         root.picturesDir = (config.picturesDir || root.picturesDir).replace(/^\~\//, Quickshell.env("HOME") + "/")
         root.recursive = Model.asBool(config.recursive, root.recursive)
+        root.columns = Math.max(2, Math.min(12, Model.asInt(config.columns, root.columns)))
         root.rotationEnabled = Model.asBool(config.rotationEnabled, root.rotationEnabled)
         root.rotationIntervalMin = Model.asInt(config.rotationIntervalMin, root.rotationIntervalMin)
         root.rotationRandom = Model.asBool(config.rotationRandom, root.rotationRandom)
@@ -1521,6 +1522,26 @@ Item {
                                 anchors.margins: 8
                                 onClicked: root.requestRemove([cell.path])
                             }
+                        }
+                    }
+                }
+
+                MouseArea {
+                    z: 1
+                    anchors.fill: grid
+                    propagateComposedEvents: true
+                    onWheel: function (wheel) {
+                        if (wheel.modifiers & Qt.ControlModifier) {
+                            wheel.accepted = true
+                            var delta = wheel.angleDelta.y > 0 ? 1 : -1
+                            var newColumns = Math.max(2, Math.min(12, root.columns + delta))
+                            if (newColumns !== root.columns) {
+                                root.setConfig("columns", String(newColumns))
+                                root.statusText = "Columns: " + newColumns
+                            }
+                        } else {
+                            // Direct proportional scrolling — fast spin = fast scroll
+                            grid.contentY -= wheel.angleDelta.y / 120 * 48
                         }
                     }
                 }
@@ -2055,6 +2076,48 @@ Item {
                             radius: 12
                             color: root.fieldBg
 
+                            Row {
+                                id: previewFooterButtons
+                                anchors.right: parent.right
+                                anchors.rightMargin: 20
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 10
+
+                                ToolBtn {
+                                    width: 92
+                                    height: 34
+                                    text: "Delete"
+                                    iconText: "\uF1F8"
+                                    tooltip: "Move to Trash"
+                                    visible: root.previewWallhavenId === ""
+                                    onClicked: root.requestRemove([root.previewImageSource])
+                                }
+
+                                ToolBtn {
+                                    width: 84
+                                    height: 34
+                                    text: "Apply"
+                                    tooltip: root.previewWallhavenId ? "Download and set as wallpaper" : "Set as wallpaper"
+                                    onClicked: {
+                                        root.previewCloseAfterDownload = false
+                                        if (root.previewWallhavenId)
+                                            root.applyWallhaven(root.previewWallhavenId)
+                                        else
+                                            root.setWallpaper(root.previewImageSource)
+                                        root.previewVisible = false
+                                    }
+                                }
+
+                                ToolBtn {
+                                    width: 96
+                                    height: 34
+                                    text: "Download"
+                                    tooltip: "Download to pictures directory (no apply) — closes preview"
+                                    visible: root.previewWallhavenId !== ""
+                                    onClicked: root.downloadWallhaven(root.previewWallhavenId, true)
+                                }
+                            }
+
                             Text {
                                 anchors.left: parent.left
                                 anchors.leftMargin: 24
@@ -2065,48 +2128,6 @@ Item {
                                 text: root.previewLabel || "Wallpaper preview"
                                 color: root.muted
                                 font.pixelSize: 12
-                            }
-                        }
-
-                        Row {
-                            id: previewFooterButtons
-                            anchors.right: parent.right
-                            anchors.rightMargin: 20
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 10
-
-                            ToolBtn {
-                                width: 92
-                                height: 34
-                                text: "Delete"
-                                iconText: "\uF1F8"
-                                tooltip: "Move to Trash"
-                                visible: root.previewWallhavenId === ""
-                                onClicked: root.requestRemove([root.previewImageSource])
-                            }
-
-                            ToolBtn {
-                                width: 84
-                                height: 34
-                                text: "Apply"
-                                tooltip: root.previewWallhavenId ? "Download and set as wallpaper" : "Set as wallpaper"
-                                onClicked: {
-                                    root.previewCloseAfterDownload = false
-                                    if (root.previewWallhavenId)
-                                        root.applyWallhaven(root.previewWallhavenId)
-                                    else
-                                        root.setWallpaper(root.previewImageSource)
-                                    root.previewVisible = false
-                                }
-                            }
-
-                            ToolBtn {
-                                width: 96
-                                height: 34
-                                text: "Download"
-                                tooltip: "Download to pictures directory (no apply) — closes preview"
-                                visible: root.previewWallhavenId !== ""
-                                onClicked: root.downloadWallhaven(root.previewWallhavenId, true)
                             }
                         }
                     }
