@@ -38,6 +38,8 @@ original local-folder picker, plus a few robustness fixes.
 - **Full-resolution preview** — hover any thumbnail for an **Apply** /
   **Download** overlay; download saves the full-res image to your Pictures
   folder and refreshes the local grid.
+- **In-window preview** — clicking a thumbnail opens a dimmed overlay inside
+  the picker (not a separate window); Escape, the backdrop or the ✕ closes it.
 - **Narrow-window layout** — the Wallhaven filter bar wraps its tag chips
   onto a second line.
 - **Config sync fix** — "Any" ratio, sorting and tag selections now write

@@ -576,6 +576,7 @@ Item {
 
     function open(payloadJson) {
         root.opened = true
+        root.previewVisible = false
         root.reload()
         Qt.callLater(function () {
             keyCatcher.forceActiveFocus()
@@ -911,7 +912,10 @@ Item {
             Keys.priority: Keys.BeforeItem
             Keys.onPressed: function (event) {
                 if (event.key === Qt.Key_Escape) {
-                    if (root.showSettings) {
+                    if (root.previewVisible) {
+                        root.previewVisible = false
+                        event.accepted = true
+                    } else if (root.showSettings) {
                         root.showSettings = false
                         event.accepted = true
                     } else {
@@ -1646,6 +1650,134 @@ Item {
                     }
                 }
             }
+
+            Rectangle {
+                anchors.fill: parent
+                visible: root.previewVisible
+                color: "#cc000000"
+                z: 60
+
+                MouseArea {
+                    anchors.fill: parent
+                    onWheel: function (wheel) {
+                        wheel.accepted = true
+                    }
+                    onClicked: root.previewVisible = false
+                }
+
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.margins: 32
+                    radius: 12
+                    color: root.bg
+                    border.width: 1
+                    border.color: root.fieldBorder
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onWheel: function (wheel) {
+                            wheel.accepted = true
+                        }
+                    }
+
+                    ToolBtn {
+                        width: 34
+                        height: 34
+                        text: "\u2715"
+                        tooltip: "Close preview"
+                        anchors.top: parent.top
+                        anchors.right: parent.right
+                        anchors.topMargin: 12
+                        anchors.rightMargin: 12
+                        onClicked: root.previewVisible = false
+                    }
+
+                    Image {
+                        id: previewImage
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.bottom: previewFooter.top
+                        anchors.margins: 20
+                        source: root.previewImageSource ? root.imagePath(root.previewImageSource) : ""
+                        fillMode: Image.PreserveAspectFit
+                        asynchronous: true
+                        smooth: true
+
+                        Rectangle {
+                            visible: previewImage.status !== Image.Ready
+                            anchors.fill: parent
+                            color: root.fieldBg
+                            radius: 8
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: previewImage.status === Image.Error ? "Could not load preview" : "Loading preview…"
+                                color: root.subtle
+                                font.pixelSize: 13
+                            }
+                        }
+                    }
+
+                    Item {
+                        id: previewFooter
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        height: 64
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: 12
+                            color: root.fieldBg
+
+                            Text {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 24
+                                anchors.right: previewFooterButtons.left
+                                anchors.rightMargin: 16
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideMiddle
+                                text: root.previewLabel || "Wallpaper preview"
+                                color: root.muted
+                                font.pixelSize: 12
+                            }
+                        }
+
+                        Row {
+                            id: previewFooterButtons
+                            anchors.right: parent.right
+                            anchors.rightMargin: 20
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 10
+
+                            ToolBtn {
+                                width: 84
+                                height: 34
+                                text: "Apply"
+                                tooltip: root.previewWallhavenId ? "Download and set as wallpaper" : "Set as wallpaper"
+                                onClicked: {
+                                    root.previewCloseAfterDownload = false
+                                    if (root.previewWallhavenId)
+                                        root.applyWallhaven(root.previewWallhavenId)
+                                    else
+                                        root.setWallpaper(root.previewImageSource)
+                                    root.previewVisible = false
+                                }
+                            }
+
+                            ToolBtn {
+                                width: 96
+                                height: 34
+                                text: "Download"
+                                tooltip: "Download to pictures directory (no apply) — closes preview"
+                                visible: root.previewWallhavenId !== ""
+                                onClicked: root.downloadWallhaven(root.previewWallhavenId, true)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1776,115 +1908,4 @@ Item {
         }
     }
 
-    FloatingWindow {
-        id: preview
-        visible: root.previewVisible
-        title: "Wallpaper Preview"
-        color: root.bg
-        implicitWidth: 960
-        implicitHeight: 640
-        minimumSize: Qt.size(480, 320)
-        onVisibleChanged: {
-            if (!visible)
-                root.previewVisible = false
-        }
-
-        Item {
-            id: previewCatcher
-            anchors.fill: parent
-            focus: true
-            Keys.priority: Keys.BeforeItem
-            Keys.onPressed: function (event) {
-                if (event.key === Qt.Key_Escape) {
-                    root.previewVisible = false
-                    event.accepted = true
-                }
-            }
-
-            Rectangle {
-                anchors.fill: parent
-                color: root.bg
-            }
-
-            Image {
-                id: previewImage
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.bottom: previewFooter.top
-                anchors.margins: 24
-                source: root.previewImageSource ? root.imagePath(root.previewImageSource) : ""
-                fillMode: Image.PreserveAspectFit
-                asynchronous: true
-                smooth: true
-
-                Rectangle {
-                    visible: previewImage.status !== Image.Ready
-                    anchors.fill: parent
-                    color: root.fieldBg
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: previewImage.status === Image.Error ? "Could not load preview" : "Loading preview…"
-                        color: root.subtle
-                        font.pixelSize: 13
-                    }
-                }
-            }
-
-            Item {
-                id: previewFooter
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.bottom: parent.bottom
-                height: 64
-
-                Rectangle {
-                    anchors.fill: parent
-                    color: root.fieldBg
-
-                    Text {
-                        anchors.left: parent.left
-                        anchors.leftMargin: 24
-                        anchors.verticalCenter: parent.verticalCenter
-                        elide: Text.ElideMiddle
-                        text: root.previewLabel || "Wallpaper preview"
-                        color: root.muted
-                        font.pixelSize: 12
-                    }
-                }
-
-                Row {
-                    anchors.right: parent.right
-                    anchors.rightMargin: 20
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 10
-
-                    ToolBtn {
-                        width: 84
-                        height: 34
-                        text: "Apply"
-                        tooltip: root.previewWallhavenId ? "Download and set as wallpaper" : "Set as wallpaper"
-                        onClicked: {
-                            root.previewCloseAfterDownload = false
-                            if (root.previewWallhavenId)
-                                root.applyWallhaven(root.previewWallhavenId)
-                            else
-                                root.setWallpaper(root.previewImageSource)
-                            root.previewVisible = false
-                        }
-                    }
-
-                    ToolBtn {
-                        width: 96
-                        height: 34
-                        text: "Download"
-                        tooltip: "Download to pictures directory (no apply) — closes preview"
-                        visible: root.previewWallhavenId !== ""
-                        onClicked: root.downloadWallhaven(root.previewWallhavenId, true)
-                    }
-                }
-            }
-        }
-    }
 }
