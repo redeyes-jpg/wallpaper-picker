@@ -40,6 +40,10 @@ original local-folder picker, plus a few robustness fixes.
   folder and refreshes the local grid.
 - **In-window preview** — clicking a thumbnail opens a dimmed overlay inside
   the picker (not a separate window); Escape, the backdrop or the ✕ closes it.
+- **Remove from library** — hover a thumbnail and click the trash button,
+  use **Delete** in the full-size preview, or use **Select** mode to move
+  several wallpapers to the system Trash at once. Every deletion is
+  confirmed and can be restored from the file manager.
 - **Narrow-window layout** — the Wallhaven filter bar wraps its tag chips
   onto a second line.
 - **Config sync fix** — "Any" ratio, sorting and tag selections now write

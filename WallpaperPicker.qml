@@ -57,6 +57,13 @@ Item {
     property string takenByDesc: ""
     property bool takenPopupVisible: false
 
+    property bool selectionMode: false
+    property var selectedPaths: []
+    property int selectionAnchor: -1
+    property bool deleteConfirmVisible: false
+    property var pendingDeletePaths: []
+    property string currentBackground: ""
+
     readonly property color bg: "#0a0a0a"
     readonly property color fg: "#efe6d2"
     readonly property color muted: "#8c8274"
@@ -117,6 +124,7 @@ Item {
     function setWallpaper(path) {
         root.statusText = "Applying " + root.baseName(path) + "…"
         Util.execDetached("omarchy theme bg set " + Util.shellQuote(path))
+        root.currentBgRefreshTimer.restart()
     }
 
     function applyWallhaven(id) {
@@ -136,6 +144,81 @@ Item {
 
     function closePreview() {
         root.previewVisible = false
+    }
+
+    function isSelected(path) {
+        return root.selectedPaths.indexOf(path) !== -1
+    }
+
+    function enterSelectionMode() {
+        root.selectionMode = true
+        root.selectedPaths = []
+        root.selectionAnchor = -1
+    }
+
+    function cancelSelection() {
+        root.selectionMode = false
+        root.selectedPaths = []
+        root.selectionAnchor = -1
+    }
+
+    function toggleSelected(path, index, modifiers) {
+        var paths = root.selectedPaths.slice()
+        if ((modifiers & Qt.ShiftModifier) && root.selectionAnchor >= 0 && root.selectionAnchor !== index) {
+            var start = Math.min(root.selectionAnchor, index)
+            var end = Math.max(root.selectionAnchor, index)
+            for (var i = start; i <= end; i++) {
+                var item = imageModel.get(i)
+                if (item && paths.indexOf(item.path) === -1)
+                    paths.push(item.path)
+            }
+        } else {
+            var pos = paths.indexOf(path)
+            if (pos === -1)
+                paths.push(path)
+            else
+                paths.splice(pos, 1)
+            root.selectionAnchor = index
+        }
+        root.selectedPaths = paths
+    }
+
+    function requestRemove(paths) {
+        if (!paths || paths.length === 0)
+            return
+        root.pendingDeletePaths = paths.slice()
+        root.deleteConfirmVisible = true
+    }
+
+    function cancelRemove() {
+        root.deleteConfirmVisible = false
+        root.pendingDeletePaths = []
+    }
+
+    function confirmRemove() {
+        var paths = root.pendingDeletePaths.slice()
+        if (paths.length === 0) {
+            root.cancelRemove()
+            return
+        }
+        root.deleteConfirmVisible = false
+        root.statusText = "Moving " + paths.length + " wallpaper(s) to Trash…"
+        removeProc.command = [root.cliPath, "remove"].concat(paths)
+        removeProc.running = true
+    }
+
+    function removePathsFromModel(paths) {
+        for (var i = imageModel.count - 1; i >= 0; i--) {
+            if (paths.indexOf(imageModel.get(i).path) !== -1)
+                imageModel.remove(i)
+        }
+    }
+
+    function refreshCurrentBackground() {
+        if (currentBgProc.running)
+            return
+        currentBgProc.command = ["readlink", "-f", Quickshell.env("HOME") + "/.local/state/omarchy/current/background"]
+        currentBgProc.running = true
     }
 
     function downloadWallhaven(id, closeAfter) {
@@ -577,6 +660,9 @@ Item {
     function open(payloadJson) {
         root.opened = true
         root.previewVisible = false
+        root.cancelSelection()
+        root.cancelRemove()
+        root.refreshCurrentBackground()
         root.reload()
         Qt.callLater(function () {
             keyCatcher.forceActiveFocus()
@@ -681,6 +767,54 @@ Item {
     }
 
     Process {
+        id: removeProc
+        command: []
+        stdout: StdioCollector {
+            id: removeStdout
+            waitForEnd: true
+        }
+        onExited: function (code) {
+            var payload = Model.parseJson(removeStdout.text, {}, 1048576)
+            var removed = payload && payload.removed instanceof Array ? payload.removed : []
+            var failed = payload && payload.failed instanceof Array ? payload.failed : []
+            if (removed.length > 0)
+                root.removePathsFromModel(removed)
+            if (root.previewVisible && removed.indexOf(root.previewImageSource) !== -1)
+                root.previewVisible = false
+            root.hoveredIndex = -1
+            var removedCurrent = removed.indexOf(root.currentBackground) !== -1
+            root.cancelSelection()
+            root.pendingDeletePaths = []
+            if (code !== 0 && removed.length === 0 && failed.length === 0) {
+                root.statusText = "Failed to move wallpapers to Trash"
+            } else if (failed.length > 0) {
+                root.statusText = failed.length + " wallpaper(s) could not be moved to Trash"
+            } else if (removedCurrent) {
+                root.statusText = "Removed the current wallpaper — pick a new one"
+            } else if (removed.length > 0) {
+                root.statusText = removed.length + " wallpaper(s) moved to Trash"
+            }
+            if (imageModel.count === 0 && removed.length > 0)
+                root.statusText = "No images left in " + root.picturesDir
+            if (removedCurrent)
+                root.currentBackground = ""
+        }
+    }
+
+    Process {
+        id: currentBgProc
+        command: []
+        stdout: StdioCollector {
+            id: currentBgStdout
+            waitForEnd: true
+        }
+        onExited: function (code) {
+            var value = String(currentBgStdout.text).trim()
+            root.currentBackground = code === 0 ? value : ""
+        }
+    }
+
+    Process {
         id: wallhavenProc
         command: []
         stdout: StdioCollector {
@@ -743,6 +877,7 @@ Item {
         onExited: function (code) {
             if (code === 0) {
                 root.statusText = "Wallhaven wallpaper applied"
+                root.currentBgRefreshTimer.restart()
             } else {
                 var message = String(wallhavenApplyStdout.text).trim()
                 root.statusText = message || "Failed to apply Wallhaven wallpaper"
@@ -866,6 +1001,13 @@ Item {
         }
     }
 
+    Timer {
+        id: currentBgRefreshTimer
+        interval: 500
+        repeat: false
+        onTriggered: root.refreshCurrentBackground()
+    }
+
     FileView {
         id: configFile
         path: root.configPath
@@ -912,8 +1054,14 @@ Item {
             Keys.priority: Keys.BeforeItem
             Keys.onPressed: function (event) {
                 if (event.key === Qt.Key_Escape) {
-                    if (root.previewVisible) {
+                    if (root.deleteConfirmVisible) {
+                        root.cancelRemove()
+                        event.accepted = true
+                    } else if (root.previewVisible) {
                         root.previewVisible = false
+                        event.accepted = true
+                    } else if (root.selectionMode) {
+                        root.cancelSelection()
                         event.accepted = true
                     } else if (root.showSettings) {
                         root.showSettings = false
@@ -922,6 +1070,9 @@ Item {
                         root.dismiss()
                         event.accepted = true
                     }
+                } else if (event.key === Qt.Key_Delete && root.selectionMode && !root.deleteConfirmVisible && root.selectedPaths.length > 0) {
+                    root.requestRemove(root.selectedPaths)
+                    event.accepted = true
                 }
             }
 
@@ -975,7 +1126,10 @@ Item {
                         visible: !root.showSettings
                         iconText: "\uEAF8"
                         tooltip: "Settings"
-                        onClicked: root.showSettings = true
+                        onClicked: {
+                            root.showSettings = true
+                            root.cancelSelection()
+                        }
                     }
                 }
             }
@@ -999,6 +1153,7 @@ Item {
                     onClicked: {
                         root.showWallhaven = false
                         root.showSettings = false
+                        root.cancelSelection()
                         root.wallhavenPage = 1
                         wallhavenModel.clear()
                         root.wallhavenEnd = false
@@ -1018,6 +1173,7 @@ Item {
                     onClicked: {
                         root.showWallhaven = true
                         root.showSettings = false
+                        root.cancelSelection()
                         root.resetWallhaven()
                     }
                 }
@@ -1226,21 +1382,24 @@ Item {
                         required property string color
                         required property int index
 
+                        readonly property bool cellSelected: root.isSelected(cell.path)
+                        readonly property bool cellHighlighted: root.hoveredIndex === cell.index || cellSelected
+
                         width: grid.cellWidth - root.gridSpacing
                         height: grid.cellHeight - root.gridSpacing
 
                         Rectangle {
                             anchors.fill: parent
-                            radius: root.hoveredIndex === cell.index ? 0 : 10
+                            radius: cell.cellHighlighted ? 0 : 10
                             color: root.fieldBg
-                            border.width: root.hoveredIndex === cell.index ? 2 : 0
+                            border.width: cell.cellHighlighted ? 2 : 0
                             border.color: root.accent
                             clip: true
 
                             Image {
                                 id: thumb
                                 anchors.fill: parent
-                                anchors.margins: root.hoveredIndex === cell.index ? 2 : 0
+                                anchors.margins: cell.cellHighlighted ? 2 : 0
                                 source: root.imagePath(cell.path)
                                 fillMode: Image.PreserveAspectCrop
                                 asynchronous: true
@@ -1266,7 +1425,7 @@ Item {
                                 anchors.right: parent.right
                                 anchors.bottom: parent.bottom
                                 height: 26
-                                visible: root.hoveredIndex === cell.index
+                                visible: cell.cellHighlighted
                                 gradient: Gradient {
                                     GradientStop { position: 0.0; color: "#00000000" }
                                     GradientStop { position: 1.0; color: "#c0000000" }
@@ -1277,11 +1436,31 @@ Item {
                                     anchors.right: parent.right
                                     anchors.bottom: parent.bottom
                                     anchors.margins: 6
+                                    anchors.rightMargin: cell.wallhavenId === "" && root.hoveredIndex === cell.index && !root.selectionMode ? 40 : 6
                                     elide: Text.ElideMiddle
                                     text: cell.label || root.baseName(cell.path)
                                     color: root.fg
                                     font.pixelSize: 11
                                 }
+                            }
+                        }
+
+                        Rectangle {
+                            visible: cell.cellSelected
+                            width: 24
+                            height: 24
+                            radius: 12
+                            color: root.accent
+                            anchors.top: parent.top
+                            anchors.left: parent.left
+                            anchors.margins: 8
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "\uF00C"
+                                color: root.bg
+                                font.family: "JetBrainsMono Nerd Font"
+                                font.pixelSize: 12
                             }
                         }
 
@@ -1294,8 +1473,11 @@ Item {
                                 if (root.hoveredIndex === cell.index)
                                     root.hoveredIndex = -1
                             }
-                            onClicked: {
-                                root.openPreview(cell)
+                            onClicked: function (mouse) {
+                                if (root.selectionMode)
+                                    root.toggleSelected(cell.path, cell.index, mouse.modifiers)
+                                else
+                                    root.openPreview(cell)
                             }
 
                             Row {
@@ -1303,7 +1485,7 @@ Item {
                                 anchors.right: parent.right
                                 anchors.margins: 10
                                 spacing: 6
-                                visible: root.hoveredIndex === cell.index
+                                visible: root.hoveredIndex === cell.index && !root.selectionMode
 
                                 ToolBtn {
                                     width: 52
@@ -1326,6 +1508,18 @@ Item {
                                     visible: cell.wallhavenId !== ""
                                     onClicked: root.downloadWallhaven(cell.wallhavenId, false)
                                 }
+                            }
+
+                            ToolBtn {
+                                width: 26
+                                height: 26
+                                iconText: "\uF1F8"
+                                tooltip: "Move to Trash"
+                                visible: cell.wallhavenId === "" && root.hoveredIndex === cell.index && !root.selectionMode
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                anchors.margins: 8
+                                onClicked: root.requestRemove([cell.path])
                             }
                         }
                     }
@@ -1585,6 +1779,53 @@ Item {
                     }
                 }
 
+                Row {
+                    visible: !root.showSettings && !root.showWallhaven
+                    anchors.right: parent.right
+                    anchors.rightMargin: 24
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 8
+
+                    ToolBtn {
+                        visible: !root.selectionMode
+                        width: 92
+                        height: 40
+                        text: "Select"
+                        iconText: "\uF0C8"
+                        tooltip: "Select multiple wallpapers"
+                        onClicked: root.enterSelectionMode()
+                    }
+
+                    Text {
+                        visible: root.selectionMode
+                        text: root.selectedPaths.length + " selected"
+                        color: root.muted
+                        font.pixelSize: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    ToolBtn {
+                        visible: root.selectionMode
+                        width: 84
+                        height: 40
+                        text: "Delete"
+                        iconText: "\uF1F8"
+                        tooltip: "Move selected wallpapers to Trash"
+                        enabled: root.selectedPaths.length > 0
+                        opacity: enabled ? 1 : 0.4
+                        onClicked: root.requestRemove(root.selectedPaths)
+                    }
+
+                    ToolBtn {
+                        visible: root.selectionMode
+                        width: 84
+                        height: 40
+                        text: "Cancel"
+                        tooltip: "Exit selection mode"
+                        onClicked: root.cancelSelection()
+                    }
+                }
+
                 Text {
                     visible: root.showSettings
                     text: "Rotation changes are saved immediately."
@@ -1645,6 +1886,89 @@ Item {
                                 text: "Replace"
                                 highlighted: true
                                 onClicked: root.applyPendingKeybind()
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                anchors.fill: parent
+                visible: root.deleteConfirmVisible
+                color: "#99000000"
+                z: 70
+
+                MouseArea {
+                    anchors.fill: parent
+                    onWheel: function (wheel) {
+                        wheel.accepted = true
+                    }
+                    onClicked: root.cancelRemove()
+                }
+
+                Rectangle {
+                    width: 460
+                    height: deleteColumn.implicitHeight + 56
+                    radius: 12
+                    color: root.fieldBg
+                    border.width: 1
+                    border.color: root.fieldBorder
+                    anchors.centerIn: parent
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onWheel: function (wheel) {
+                            wheel.accepted = true
+                        }
+                    }
+
+                    Column {
+                        id: deleteColumn
+                        anchors.fill: parent
+                        anchors.margins: 28
+                        spacing: 18
+
+                        Text {
+                            text: root.pendingDeletePaths.length === 1
+                                ? "Move to Trash?"
+                                : "Move " + root.pendingDeletePaths.length + " wallpapers to Trash?"
+                            color: root.fg
+                            font.pixelSize: 15
+                            font.weight: Font.Medium
+                        }
+
+                        Text {
+                            text: root.pendingDeletePaths.length === 1
+                                ? "This wallpaper will be moved to the system Trash."
+                                : "These wallpapers will be moved to the system Trash."
+                            color: root.muted
+                            font.pixelSize: 13
+                            wrapMode: Text.Wrap
+                            width: parent.width
+                        }
+
+                        Text {
+                            visible: root.currentBackground !== "" && root.pendingDeletePaths.indexOf(root.currentBackground) !== -1
+                            text: "The wallpaper currently applied is included — your background may not survive a restart."
+                            color: root.accent
+                            font.pixelSize: 12
+                            wrapMode: Text.Wrap
+                            width: parent.width
+                        }
+
+                        Row {
+                            anchors.right: parent.right
+                            spacing: 10
+
+                            ToolBtn {
+                                text: "Cancel"
+                                onClicked: root.cancelRemove()
+                            }
+
+                            ToolBtn {
+                                text: "Move to Trash"
+                                highlighted: true
+                                onClicked: root.confirmRemove()
                             }
                         }
                     }
@@ -1750,6 +2074,16 @@ Item {
                             anchors.rightMargin: 20
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: 10
+
+                            ToolBtn {
+                                width: 92
+                                height: 34
+                                text: "Delete"
+                                iconText: "\uF1F8"
+                                tooltip: "Move to Trash"
+                                visible: root.previewWallhavenId === ""
+                                onClicked: root.requestRemove([root.previewImageSource])
+                            }
 
                             ToolBtn {
                                 width: 84

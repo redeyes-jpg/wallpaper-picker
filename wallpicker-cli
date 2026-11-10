@@ -90,6 +90,52 @@ cmd_list() {
     2>/dev/null | sort | jq -Rsc 'split("\n") | map(select(length > 0))'
 }
 
+# ---------------------------------------------------------------- remove
+
+cmd_remove() {
+  local pictures_dir real_dir path real removed_json failed_json
+  pictures_dir=$(cfg picturesDir)
+  [[ -n "$pictures_dir" ]] || die "picturesDir is empty"
+  pictures_dir="${pictures_dir/#\~/$HOME}"
+  [[ -d "$pictures_dir" ]] || die "directory not found: $pictures_dir"
+  real_dir=$(realpath -e -- "$pictures_dir") || die "cannot resolve picturesDir: $pictures_dir"
+  [[ $# -gt 0 ]] || die "usage: wallpicker remove <path>..."
+
+  local -a removed=() failed=()
+  for path in "$@"; do
+    if [[ ! -f "$path" ]]; then
+      failed+=("$path")
+      continue
+    fi
+    real=$(realpath -e -- "$path" 2>/dev/null) || {
+      failed+=("$path")
+      continue
+    }
+    # Only allow files inside the configured pictures directory.
+    if [[ "$real_dir" != "/" && "$real" != "$real_dir"/* ]]; then
+      failed+=("$path")
+      continue
+    fi
+    case "${real,,}" in
+      *.png|*.jpg|*.jpeg|*.webp|*.bmp|*.gif|*.tiff) ;;
+      *)
+        failed+=("$path")
+        continue
+        ;;
+    esac
+    if gio trash -- "$real" >/dev/null 2>&1; then
+      removed+=("$real")
+    else
+      failed+=("$path")
+    fi
+  done
+
+  removed_json=$(printf '%s\n' "${removed[@]:-}" | jq -Rsc 'split("\n") | map(select(length > 0))')
+  failed_json=$(printf '%s\n' "${failed[@]:-}" | jq -Rsc 'split("\n") | map(select(length > 0))')
+  jq -n --argjson removed "$removed_json" --argjson failed "$failed_json" \
+    '{removed: $removed, failed: $failed}'
+}
+
 # ---------------------------------------------------------------- apply
 
 cmd_apply() {
@@ -467,6 +513,7 @@ case "${1:-help}" in
     esac
     ;;
   list)  cmd_list ;;
+  remove) shift; cmd_remove "$@" ;;
   next)  cmd_next ;;
   apply) shift; cmd_apply "${1:?usage: wallpicker apply <path>}" ;;
   keybinds)
@@ -510,6 +557,7 @@ help|-h|--help)
 wallpicker — Wallpaper picker and rotation for Omarchy
 
   wallpicker list                    JSON array of image paths in picturesDir
+  wallpicker remove <path>...        Move wallpapers to the system Trash
   wallpicker next                    Cycle to next wallpaper (random or sequential)
   wallpicker apply <path>            Set a specific wallpaper
   wallpicker config show|get|set     Read or edit ~/.config/omarchy/wallpicker.json
