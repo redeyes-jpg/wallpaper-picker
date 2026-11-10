@@ -1023,7 +1023,7 @@ Item {
                 id: wallhavenFilters
                 visible: root.showWallhaven && !root.showSettings
                 width: parent.width
-                height: 128
+                height: 88
                 anchors.top: tabs.bottom
 
                 Row {
@@ -1033,11 +1033,11 @@ Item {
                     anchors.top: parent.top
                     anchors.topMargin: 8
                     height: 32
-                    spacing: 10
+                    spacing: 6
 
                     TextField {
                         id: wallhavenSearchField
-                        width: 220
+                        width: 190
                         height: 32
                         placeholderText: "Search Wallhaven…"
                         placeholderTextColor: root.subtle
@@ -1091,20 +1091,10 @@ Item {
                         tooltip: "Purity"
                         onClicked: root.cyclePurity()
                     }
-                }
-
-                Row {
-                    id: filtersRow2
-                    anchors.left: parent.left
-                    anchors.leftMargin: 28
-                    anchors.top: filtersRow.bottom
-                    anchors.topMargin: 8
-                    height: 32
-                    spacing: 10
 
                     ToolBtn {
                         id: sortBtn
-                        width: 110
+                        width: 100
                         height: 32
                         text: root.sortingLabel()
                         tooltip: "Sort by"
@@ -1113,7 +1103,7 @@ Item {
 
                     ToolBtn {
                         id: randomSortBtn
-                        width: 72
+                        width: 66
                         height: 32
                         text: "Random"
                         tooltip: "Sort: Random"
@@ -1143,7 +1133,7 @@ Item {
 
                     ToolBtn {
                         id: ratioBtn
-                        width: 70
+                        width: 60
                         height: 32
                         text: root.ratioLabel()
                         tooltip: "Aspect ratio"
@@ -1151,7 +1141,7 @@ Item {
                     }
 
                     ToolBtn {
-                        width: 110
+                        width: 96
                         height: 32
                         text: root.resolutionLabel()
                         tooltip: "Minimum resolution"
@@ -1159,7 +1149,7 @@ Item {
                     }
 
                     ToolBtn {
-                        width: 80
+                        width: 60
                         height: 32
                         text: "Reset"
                         tooltip: "Clear search, aspect ratio and resolution"
@@ -1171,7 +1161,7 @@ Item {
                     id: tagChipsRow
                     anchors.left: parent.left
                     anchors.leftMargin: 28
-                    anchors.top: filtersRow2.bottom
+                    anchors.top: filtersRow.bottom
                     anchors.topMargin: 8
                     height: 32
                     spacing: 6
