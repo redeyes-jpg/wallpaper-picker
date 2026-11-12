@@ -15,6 +15,17 @@ original local-folder picker, plus a few robustness fixes.
 
 ## What's new in this fork
 
+- **Collections** — organize wallpapers into your own named collections.
+  The **WALLPAPERS** tab now has **All** and **Collections** sub-tabs.
+  Collections expand/collapse as sections with a live thumbnail grid; a
+  built-in **Omarchy Themes** collection is created automatically from the
+  current Omarchy theme's backgrounds at no extra cost. Right-click any wallpaper
+  (or select several with **Select** and use *Add to Collection*) to file
+  it away. Deleting a collection never deletes the wallpapers themselves.
+- **Faster grids** — thumbnails are rendered once into a local cache
+  (300 px, quality 80) and reused, so the grid no longer decodes full-size
+  originals; a 200-wallpaper folder fills in about a second, and cache
+  warming runs in parallel in the background.
 - **Wallpaper rotation** — a built-in timer cycles your wallpapers
   randomly or in folder order (15m → Daily), survives shell restarts,
   and is controllable from the toolbar, the Settings tab, keybinds or IPC.

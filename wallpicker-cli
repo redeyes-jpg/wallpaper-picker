@@ -4,6 +4,10 @@ set -uo pipefail
 
 CONFIG_FILE="${WALLPICKER_CONFIG:-$HOME/.config/omarchy/wallpicker.json}"
 STATE_DIR="${WALLPICKER_STATE_DIR:-$HOME/.local/state/omarchy/wallpicker}"
+THUMB_DIR="${WALLPICKER_THUMB_DIR:-$HOME/.cache/wallpicker/thumbs}"
+COLLECTIONS_DIR="${WALLPICKER_COLLECTIONS_DIR:-$HOME/.local/share/wallpicker/collections}"
+THUMB_WIDTH=300
+OMARCHY_THEMES_DIR="${OMARCHY_THEMES_DIR:-$HOME/.local/share/omarchy/themes}"
 STATE_FILE="$STATE_DIR/rotation.json"
 LUA_FILE="$HOME/.config/hypr/wallpicker.lua"
 HL_FILE="$HOME/.config/hypr/hyprland.lua"
@@ -71,10 +75,45 @@ cfg_set() {
   printf '%s\n' "$tmp" > "$CONFIG_FILE"
 }
 
-# ---------------------------------------------------------------- list
+# ---------------------------------------------------------------- thumbs
+
+thumb_hash() {
+  printf '%s' "$1" | md5sum | cut -c1-32
+}
+
+thumb_path() {
+  echo "$THUMB_DIR/$(thumb_hash "$1").jpg"
+}
+
+# Echo a JSON object {path, thumb} for $1.
+# `thumb` is emitted only when the cached file already exists, so the UI can
+# fall back to the original image instead of blocking on thumbnail creation.
+emit_path_thumb() {
+  local src="$1"
+  local dst
+  dst=$(thumb_path "$src")
+  if [[ -f "$dst" ]]; then
+    jq -cn --arg path "$src" --arg thumb "$dst" '{path: $path, thumb: $thumb}'
+  else
+    jq -cn --arg path "$src" '{path: $path, thumb: ""}'
+  fi
+}
+
+# Read newline-separated paths on stdin, emit a JSON array of {path, thumb}.
+emit_paths_json() {
+  local tmp
+  tmp=$(mktemp)
+  local src
+  while IFS= read -r src; do
+    [[ -n "$src" && -f "$src" ]] || continue
+    emit_path_thumb "$src" >> "$tmp"
+  done
+  jq -s '.' "$tmp"
+  rm -f "$tmp"
+}
 
 cmd_list() {
-  local pictures_dir depth
+  local pictures_dir depth tmp
   pictures_dir=$(cfg picturesDir)
   [[ -n "$pictures_dir" ]] || die "picturesDir is empty"
   pictures_dir="${pictures_dir/#\~/$HOME}"
@@ -84,10 +123,293 @@ cmd_list() {
   depth=1
   [[ "$(cfg recursive)" == "true" ]] && depth=99
 
-  find "$pictures_dir" -maxdepth "$depth" -type f \
+  tmp=$(mktemp)
+  while IFS= read -r src; do
+    [[ -n "$src" ]] || continue
+    emit_path_thumb "$src" >> "$tmp"
+  done < <(find "$pictures_dir" -maxdepth "$depth" -type f \
     \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o \
        -iname '*.webp' -o -iname '*.bmp' -o -iname '*.gif' -o -iname '*.tiff' \) \
-    2>/dev/null | sort | jq -Rsc 'split("\n") | map(select(length > 0))'
+    2>/dev/null | sort)
+
+  jq -s '.' "$tmp"
+  rm -f "$tmp"
+}
+
+cmd_thumbs() {
+  mkdir -p "$THUMB_DIR"
+  command -v vipsthumbnail >/dev/null 2>&1 || { jq -n '{generated: 0, skipped: 0, unsupported: true}'; return 0; }
+
+  local pictures_dir depth jobs jobs_max
+  pictures_dir=$(cfg picturesDir)
+  [[ -n "$pictures_dir" ]] || die "picturesDir is empty"
+  pictures_dir="${pictures_dir/#\~/$HOME}"
+
+  depth=1
+  [[ "$(cfg recursive)" == "true" ]] && depth=99
+
+  jobs_max=$(nproc 2>/dev/null || echo 2)
+  jobs=$(( jobs_max > 8 ? 8 : jobs_max ))
+  [[ "$jobs" -lt 1 ]] && jobs=1
+
+  local queue count generated skipped
+  queue=$(mktemp)
+
+  # Queue every image that has no fresh cached thumbnail.
+  {
+    if [[ -d "$pictures_dir" ]]; then
+      find "$pictures_dir" -maxdepth "$depth" -type f \
+        \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o \
+           -iname '*.webp' -o -iname '*.bmp' -o -iname '*.gif' -o -iname '*.tiff' \) \
+        2>/dev/null
+    fi
+    if [[ -d "$OMARCHY_THEMES_DIR" ]]; then
+      find "$OMARCHY_THEMES_DIR" -type f \
+        \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \) \
+        2>/dev/null
+    fi
+    # Wallpapers filed in collections may live outside picturesDir.
+    if [[ -d "$COLLECTIONS_DIR" ]]; then
+      find "$COLLECTIONS_DIR" -maxdepth 1 -type f -name '*.json' -exec jq -r '.paths[]? // empty' {} + 2>/dev/null
+    fi
+  } | while IFS= read -r src; do
+      local dst
+      dst=$(thumb_path "$src")
+      if [[ -f "$dst" && "$dst" -nt "$src" ]]; then
+        continue
+      fi
+      printf '%s\0%s\0' "$src" "$dst"
+    done > "$queue"
+
+  count=$(tr -cd '\0' < "$queue" | wc -c)
+  count=$((count / 2))
+  skipped=$count
+
+  if [[ "$count" -gt 0 ]]; then
+    export THUMB_WIDTH
+    xargs -0 -n 2 -P "$jobs" sh -c \
+      'vipsthumbnail "$1" -s "$THUMB_WIDTH" -o "$2[Q=80]" >/dev/null 2>&1 || true' _ \
+      < "$queue" >/dev/null 2>&1 || true
+  fi
+
+  rm -f "$queue"
+
+  generated=0
+  if [[ -d "$THUMB_DIR" ]]; then
+    generated=$(find "$THUMB_DIR" -maxdepth 1 -type f -name '*.jpg' 2>/dev/null | wc -l)
+  fi
+  jq -n --argjson cached "$generated" --argjson queued "$skipped" \
+    '{cached: $cached, queued: $queued}'
+}
+
+# ---------------------------------------------------------------- collections
+
+collections_dir() {
+  mkdir -p "$COLLECTIONS_DIR"
+  echo "$COLLECTIONS_DIR"
+}
+
+omarchy_themes_dir() {
+  mkdir -p "$OMARCHY_THEMES_DIR"
+  echo "$OMARCHY_THEMES_DIR"
+}
+
+# Path of the JSON file backing a user collection named $1 (empty if absent).
+collection_file_for() {
+  local name="$1"
+  local dir
+  dir=$(collections_dir)
+  local f
+  for f in "$dir"/*.json; do
+    [[ -f "$f" ]] || continue
+    local fname
+    fname=$(jq -r '.name // ""' "$f" 2>/dev/null) || fname=""
+    if [[ "$fname" == "$name" ]]; then
+      echo "$f"
+      return 0
+    fi
+  done
+  return 1
+}
+
+cmd_collections_list() {
+  local dir tmp
+  dir=$(collections_dir)
+  tmp=$(mktemp)
+
+  local f
+  for f in "$dir"/*.json; do
+    [[ -f "$f" ]] || continue
+    local name id enriched
+    name=$(jq -r '.name // "Untitled"' "$f" 2>/dev/null)
+    id=$(jq -r '.id // ""' "$f" 2>/dev/null)
+    enriched=$(jq -r '.paths[]?' "$f" 2>/dev/null | emit_paths_json)
+    jq -cn --arg name "$name" --arg id "$id" --argjson paths "${enriched:-[]}" \
+      '{name: $name, id: $id, paths: $paths}' >> "$tmp"
+  done
+
+  # Default collection: omarchy themes
+  local themes_dir enriched_themes
+  themes_dir=$(omarchy_themes_dir)
+  enriched_themes=$(find "$themes_dir" -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \) 2>/dev/null | sort | emit_paths_json)
+  jq -cn --argjson paths "${enriched_themes:-[]}" \
+    '{name: "Omarchy Themes", id: "omarchy", paths: $paths}' >> "$tmp"
+
+  jq -s '.' "$tmp"
+  rm -f "$tmp"
+}
+
+cmd_collections_create() {
+  local name="${1:?usage: wallpicker collections create <name>}"
+  # Trim surrounding whitespace.
+  name="${name#"${name%%[![:space:]]*}"}"
+  name="${name%"${name##*[![:space:]]}"}"
+  [[ -n "$name" ]] || die "collection name is empty"
+  [[ "$name" == "Omarchy Themes" ]] && die "\"Omarchy Themes\" is a built-in collection"
+
+  local dir
+  dir=$(collections_dir)
+
+  # Refuse duplicates (names are the user-facing identifier).
+  if [[ -n "$(collection_file_for "$name")" ]]; then
+    jq -n --arg name "$name" '{error: "Collection already exists: \($name)"}'
+    return 1
+  fi
+
+  # Slug for id; keep it unique even when two collections map to the same slug.
+  local id slug
+  slug=$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-_' | tr -s '-')
+  slug="${slug:-collection}"
+  id="${slug}_$(date +%s)"
+  local file="$dir/${id}.json"
+  local suffix=1
+  while [[ -f "$file" ]]; do
+    file="$dir/${id}-${suffix}.json"
+    suffix=$((suffix + 1))
+  done
+
+  jq -n --arg name "$name" --arg id "$id" \
+    '{name: $name, id: $id, paths: []}' > "$file"
+  jq -n --arg name "$name" --arg id "$id" '{name: $name, id: $id, created: true}'
+}
+
+cmd_collections_add() {
+  local name="${1:?usage: wallpicker collections add <name> <path>...}"
+  shift
+
+  [[ "$name" == "Omarchy Themes" ]] \
+    && die "the \"Omarchy Themes\" collection is managed by Omarchy and cannot be edited"
+
+  local file
+  file=$(collection_file_for "$name")
+  if [[ -z "$file" ]]; then
+    jq -n --arg name "$name" '{error: "Collection not found: \($name)"}' >&2
+    return 1
+  fi
+
+  # Only existing image files can be added.
+  local -a wanted=()
+  local p lower
+  for p in "$@"; do
+    [[ -n "$p" ]] || continue
+    [[ -f "$p" ]] || continue
+    lower=$(echo "$p" | tr '[:upper:]' '[:lower:]')
+    case "$lower" in
+      *.png|*.jpg|*.jpeg|*.webp|*.bmp|*.gif|*.tiff|*.PNG|*.JPG|*.JPEG|*.WEBP|*.BMP|*.GIF|*.TIFF)
+        wanted+=("$p") ;;
+    esac
+  done
+
+  local before after
+  before=$(jq '[.paths[]?] | length' "$file" 2>/dev/null || echo 0)
+  before=${before:-0}
+
+    if [[ ${#wanted[@]} -gt 0 ]]; then
+    local paths_json
+    paths_json=$(printf '%s\n' "${wanted[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')
+    jq --argjson add "$paths_json" \
+       '.paths = (((.paths // []) + $add)
+                    | reduce .[] as $p ([]; if index($p) == null then . + [$p] else . end))' \
+       "$file" > "$file.tmp" 2>/dev/null \
+      && mv "$file.tmp" "$file"
+  fi
+
+  after=$(jq '[.paths[]?] | length' "$file" 2>/dev/null || echo 0)
+  after=${after:-0}
+
+  jq -n --argjson added "$((after - before))" --argjson skipped "$(( ${#wanted[@]} - (after - before) ))" \
+    '{added: $added, alreadyIn: $skipped}'
+}
+
+cmd_collections_remove() {
+  local name="${1:?usage: wallpicker collections remove <name> <path>...}"
+  shift
+
+  [[ "$name" == "Omarchy Themes" ]] \
+    && die "the \"Omarchy Themes\" collection is managed by Omarchy and cannot be edited"
+
+  local file
+  file=$(collection_file_for "$name")
+  [[ -z "$file" ]] && { jq -n '{removed: 0}'; return 0; }
+
+  local before after
+  before=$(jq '[.paths[]?] | length' "$file" 2>/dev/null || echo 0)
+  before=${before:-0}
+
+  local remove_json
+  remove_json=$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0))')
+  jq --argjson remove "$remove_json" \
+    '.paths = [.paths[]? | select(. as $p | ($remove | index($p)) | not)]' "$file" > "$file.tmp" \
+    && mv "$file.tmp" "$file"
+
+  after=$(jq '[.paths[]?] | length' "$file" 2>/dev/null || echo 0)
+  after=${after:-0}
+
+  jq -n --argjson n "$((before - after))" '{removed: $n}'
+}
+
+cmd_collections_delete() {
+  local name="${1:?usage: wallpicker collections delete <name>}"
+
+  [[ "$name" == "Omarchy Themes" ]] \
+    && die "the \"Omarchy Themes\" collection is built in and cannot be deleted"
+
+  local file
+  file=$(collection_file_for "$name")
+
+  if [[ -n "$file" && -f "$file" ]]; then
+    rm -f "$file"
+    jq -n '{deleted: true}'
+  else
+    jq -n '{deleted: false}'
+  fi
+}
+
+cmd_collections_prune() {
+  [[ $# -gt 0 ]] || die "usage: wallpicker collections prune <path>..."
+  local dir
+  dir=$(collections_dir)
+  local removed=0
+  local f
+  for f in "$dir"/*.json; do
+    [[ -f "$f" ]] || continue
+    local before after
+    before=$(jq '[.paths[]?] | length' "$f" 2>/dev/null || echo 0)
+    jq --argjson rm "$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
+      '.paths = [.paths[]? | select(. as $p | ($rm | index($p)) | not)]' "$f" > "$f.tmp" 2>/dev/null \
+      && mv "$f.tmp" "$f"
+    after=$(jq '[.paths[]?] | length' "$f" 2>/dev/null || echo 0)
+    removed=$((removed + before - after))
+  done
+  jq -n --argjson n "$removed" '{removed: $n}'
+}
+
+# ---------------------------------------------------------------- themes
+
+cmd_themes_list() {
+  local themes_dir
+  themes_dir=$(omarchy_themes_dir)
+  find "$themes_dir" -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \) 2>/dev/null | sort | emit_paths_json
 }
 
 # ---------------------------------------------------------------- remove
@@ -132,6 +454,16 @@ cmd_remove() {
 
   removed_json=$(printf '%s\n' "${removed[@]:-}" | jq -Rsc 'split("\n") | map(select(length > 0))')
   failed_json=$(printf '%s\n' "${failed[@]:-}" | jq -Rsc 'split("\n") | map(select(length > 0))')
+
+  # Clean up cached thumbnails + collection memberships for removed wallpapers
+  for real in "${removed[@]:-}"; do
+    [[ -n "$real" ]] || continue
+    rm -f "$(thumb_path "$real")" 2>/dev/null
+  done
+  if [[ ${#removed[@]} -gt 0 ]]; then
+    cmd_collections_prune "${removed[@]}" >/dev/null 2>&1 || true
+  fi
+
   jq -n --argjson removed "$removed_json" --argjson failed "$failed_json" \
     '{removed: $removed, failed: $failed}'
 }
@@ -181,7 +513,7 @@ cmd_next() {
   # Index of the last applied wallpaper, or -1 when it is not in the list.
   local last_idx
   last_idx=$(jq --arg p "$last_path" \
-    'to_entries | map(select(.value == $p)) | if length > 0 then .[0].key else -1 end' <<< "$list_json")
+    'map(.path) | to_entries | map(select(.value == $p)) | if length > 0 then .[0].key else -1 end' <<< "$list_json")
   [[ "$last_idx" =~ ^[0-9]+$ ]] || last_idx=-1
 
   random=$(cfg rotationRandom)
@@ -208,7 +540,7 @@ cmd_next() {
   fi
 
   ensure_state
-  path=$(jq -r ".[$index]" <<< "$list_json")
+  path=$(jq -r ".[$index].path" <<< "$list_json")
   jq --argjson idx "$index" --arg p "$path" \
     '.rotationIndex = $idx | .lastAppliedPath = $p' "$STATE_FILE" \
     > "$STATE_FILE.tmp" && mv -f "$STATE_FILE.tmp" "$STATE_FILE"
@@ -513,6 +845,20 @@ case "${1:-help}" in
     esac
     ;;
   list)  cmd_list ;;
+  thumbs) cmd_thumbs ;;
+  collections)
+    shift
+    case "${1:-list}" in
+      list)   cmd_collections_list ;;
+      create) shift; cmd_collections_create "$@" ;;
+      add)    shift; cmd_collections_add "$@" ;;
+      remove) shift; cmd_collections_remove "$@" ;;
+      delete) shift; cmd_collections_delete "$@" ;;
+      prune)  shift; cmd_collections_prune "$@" ;;
+      *)      die "unknown collections subcommand: $1 (use: list|create|add|remove|delete|prune)" ;;
+    esac
+    ;;
+  themes) cmd_themes_list ;;
   remove) shift; cmd_remove "$@" ;;
   next)  cmd_next ;;
   apply) shift; cmd_apply "${1:?usage: wallpicker apply <path>}" ;;
@@ -556,7 +902,18 @@ help|-h|--help)
     cat <<'USAGE'
 wallpicker — Wallpaper picker and rotation for Omarchy
 
-  wallpicker list                    JSON array of image paths in picturesDir
+  wallpicker list                    JSON array of {path, thumb} in picturesDir
+  wallpicker thumbs                  Generate any missing cached thumbnails (parallel)
+  wallpicker themes                  JSON array of Omarchy theme background images
+  wallpicker collections list        JSON array of collections with their wallpapers
+  wallpicker collections create <n> Create an empty collection named <n>
+  wallpicker collections add <n> <p>...
+                                     Add wallpapers to collection <n>
+  wallpicker collections remove <n> <p>...
+                                     Remove wallpapers from collection <n>
+  wallpicker collections delete <n> Delete collection <n> (files are kept)
+  wallpicker collections prune <p>...
+                                     Drop wallpapers from every collection
   wallpicker remove <path>...        Move wallpapers to the system Trash
   wallpicker next                    Cycle to next wallpaper (random or sequential)
   wallpicker apply <path>            Set a specific wallpaper

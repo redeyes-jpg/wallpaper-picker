@@ -20,7 +20,7 @@ Item {
 
     property int columns: 5
     property int gridSpacing: 14
-    property int hoveredIndex: -1
+    property string hoveredPath: ""
     property bool loading: false
     property bool wallhavenLoading: false
     property string statusText: ""
@@ -64,6 +64,28 @@ Item {
     property var pendingDeletePaths: []
     property string currentBackground: ""
 
+    // Collections
+    property string localTabMode: ""
+    property var collectionsList: []
+    property bool collectionsLoading: false
+    property bool addCollectionPopupVisible: false
+    property string addCollectionTarget: ""
+    property var addCollectionPopupPaths: []
+    property string deleteCollectionName: ""
+    property bool deleteCollectionConfirmVisible: false
+    property string collectionOp: ""
+    property string collectionOpName: ""
+    property var collectionOpPaths: []
+    property bool pendingAddAfterCreate: false
+    // Collection names whose section is expanded (built-in Omarchy section starts open).
+    property var expandedCollections: ({ "Omarchy Themes": true })
+    // Right-click context menu
+    property bool contextMenuVisible: false
+    property real contextMenuX: 0
+    property real contextMenuY: 0
+    property string contextMenuPath: ""
+    property string contextMenuCollection: ""
+
     readonly property color bg: "#0a0a0a"
     readonly property color fg: "#efe6d2"
     readonly property color muted: "#8c8274"
@@ -104,6 +126,22 @@ Item {
     function reload() {
         root.loading = true
         root.statusText = ""
+        imageModel.clear()
+        listProc.command = [root.cliPath, "list"]
+        listProc.running = true
+    }
+
+    // Kick off background thumbnail generation; re-lists when finished.
+    function warmThumbnails() {
+        if (warmThumbsProc.running)
+            return
+        warmThumbsProc.command = [root.cliPath, "thumbs"]
+        warmThumbsProc.running = true
+    }
+
+    // Re-read the folder without the warming side-effects (used after thumbs land).
+    function relist() {
+        root.loading = true
         imageModel.clear()
         listProc.command = [root.cliPath, "list"]
         listProc.running = true
@@ -181,6 +219,270 @@ Item {
             root.selectionAnchor = index
         }
         root.selectedPaths = paths
+    }
+
+    // ---------------------------------------------------------------- collections
+
+    function loadCollections() {
+        root.collectionsLoading = true
+        collectionsListProc.command = [root.cliPath, "collections", "list"]
+        collectionsListProc.running = true
+    }
+
+    function parseCollections(data) {
+        root.collectionsLoading = false
+        var list = (data instanceof Array) ? data : []
+        // Keep the built-in Omarchy Themes collection at the top.
+        var reordered = []
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].id === "omarchy")
+                reordered.push(list[i])
+        }
+        for (var j = 0; j < list.length; j++) {
+            if (list[j].id !== "omarchy")
+                reordered.push(list[j])
+        }
+        root.collectionsList = reordered
+    }
+
+    // Normalized grid entries for a named collection (JS array model for GridView).
+    function gridEntriesFor(collectionName) {
+        for (var i = 0; i < root.collectionsList.length; i++) {
+            var c = root.collectionsList[i]
+            if (c.name === collectionName) {
+                var out = []
+                var paths = c.paths instanceof Array ? c.paths : []
+                for (var j = 0; j < paths.length; j++) {
+                    var e = paths[j]
+                    out.push({
+                        path: String(e.path || ""),
+                        thumb: String(e.thumb || ""),
+                        fullPath: "",
+                        wallhavenId: "",
+                        label: "",
+                        color: "",
+                        collectionName: collectionName
+                    })
+                }
+                return out
+            }
+        }
+        return []
+    }
+
+    function collectionCount(name) {
+        var entries = root.gridEntriesFor(name)
+        return entries.length
+    }
+
+    function isCollectionExpanded(name) {
+        return root.expandedCollections[String(name)] === true
+    }
+
+    function toggleCollectionExpanded(name) {
+        var key = String(name)
+        var next = {}
+        for (var k in root.expandedCollections) {
+            if (Object.prototype.hasOwnProperty.call(root.expandedCollections, k))
+                next[k] = root.expandedCollections[k]
+        }
+        if (next[key])
+            delete next[key]
+        else
+            next[key] = true
+        root.expandedCollections = next
+    }
+
+    // Whether the "Collections" tab has any user-created collections.
+    function hasUserCollections() {
+        for (var i = 0; i < root.collectionsList.length; i++) {
+            if (root.collectionsList[i].id !== "omarchy")
+                return true
+        }
+        return false
+    }
+
+    // Switch the local wallpapers area between "all" and "collections".
+    function showLocalTab(mode) {
+        root.showWallhaven = false
+        root.showSettings = false
+        root.closeCellContextMenu()
+        root.cancelSelection()
+        root.localTabMode = (mode === "collections") ? "collections" : ""
+        if (root.localTabMode === "collections") {
+            root.loadCollections()
+        } else {
+            root.reload()
+        }
+    }
+
+    function createCollection(name) {
+        var trimmed = String(name || "").trim()
+        if (!trimmed)
+            return
+        for (var i = 0; i < root.collectionsList.length; i++) {
+            if (root.collectionsList[i].name === trimmed) {
+                root.statusText = "A collection named \"" + trimmed + "\" already exists"
+                return
+            }
+        }
+        root.collectionOp = "create"
+        root.collectionOpName = trimmed
+        root.collectionOpPaths = []
+        root.statusText = "Creating collection…"
+        collectionOpProc.command = [root.cliPath, "collections", "create", trimmed]
+        collectionOpProc.running = true
+    }
+
+    // Create a collection and add the given paths to it (used by "New collection" in the popup).
+    function createCollectionAndAdd(name, paths) {
+        var trimmed = String(name || "").trim()
+        if (!trimmed)
+            return
+        for (var i = 0; i < root.collectionsList.length; i++) {
+            if (root.collectionsList[i].name === trimmed) {
+                root.statusText = "A collection named \"" + trimmed + "\" already exists"
+                return
+            }
+        }
+        root.collectionOp = "create"
+        root.collectionOpName = trimmed
+        root.collectionOpPaths = (paths instanceof Array) ? paths.slice() : []
+        root.pendingAddAfterCreate = true
+        root.closeAddCollectionPopup()
+        root.statusText = "Creating collection…"
+        collectionOpProc.command = [root.cliPath, "collections", "create", trimmed]
+        collectionOpProc.running = true
+    }
+
+    function addToCollection(name, paths) {
+        var target = String(name || "")
+        if (!target || !paths || paths.length === 0) {
+            root.closeAddCollectionPopup()
+            return
+        }
+        root.collectionOp = "add"
+        root.collectionOpName = target
+        root.collectionOpPaths = paths.slice()
+        root.statusText = "Adding " + paths.length + " to " + target + "…"
+        collectionOpProc.command = [root.cliPath, "collections", "add", target].concat(paths)
+        collectionOpProc.running = true
+    }
+
+    function removeFromCollection(name, paths) {
+        if (!name || !paths || paths.length === 0)
+            return
+        root.collectionOp = "remove"
+        root.collectionOpName = name
+        root.collectionOpPaths = paths.slice()
+        root.statusText = "Removing " + paths.length + " from " + name + "…"
+        collectionOpProc.command = [root.cliPath, "collections", "remove", name].concat(paths)
+        collectionOpProc.running = true
+    }
+
+    function deleteCollection(name) {
+        var target = String(name || "")
+        if (!target)
+            return
+        if (target === "Omarchy Themes") {
+            root.statusText = "The Omarchy Themes collection is built-in and cannot be deleted"
+            return
+        }
+        root.deleteCollectionName = target
+        root.deleteCollectionConfirmVisible = true
+    }
+
+    function confirmDeleteCollection() {
+        var name = root.deleteCollectionName
+        root.deleteCollectionConfirmVisible = false
+        root.deleteCollectionName = ""
+        if (!name)
+            return
+        root.collectionOp = "delete"
+        root.collectionOpName = name
+        root.collectionOpPaths = []
+        root.statusText = "Deleting collection…"
+        collectionOpProc.command = [root.cliPath, "collections", "delete", name]
+        collectionOpProc.running = true
+    }
+
+    function cancelDeleteCollection() {
+        root.deleteCollectionConfirmVisible = false
+        root.deleteCollectionName = ""
+    }
+
+    // Popup: add wallpaper(s) to an existing collection.
+    function openAddCollectionPopup(path) {
+        root.addCollectionTarget = String(path || "")
+        root.addCollectionPopupPaths = []
+        root.addCollectionPopupVisible = true
+        root.loadCollections()
+    }
+
+    function openAddCollectionPopupForPaths(paths) {
+        if (!paths || paths.length === 0)
+            return
+        root.addCollectionTarget = ""
+        root.addCollectionPopupPaths = paths.slice()
+        root.addCollectionPopupVisible = true
+        root.loadCollections()
+    }
+
+    function closeAddCollectionPopup() {
+        root.addCollectionPopupVisible = false
+        root.addCollectionPopupPaths = []
+        root.addCollectionTarget = ""
+    }
+
+    // Add the popup's pending paths (bulk or single).
+    function addPopupPathsToCollection(name) {
+        var paths = root.addCollectionPopupPaths
+        if (paths.length === 0 && root.addCollectionTarget)
+            paths = [root.addCollectionTarget]
+        root.addToCollection(name, paths)
+    }
+
+    function popupPathCount() {
+        var n = root.addCollectionPopupPaths.length
+        if (n === 0 && root.addCollectionTarget)
+            n = 1
+        return n
+    }
+
+    // Right-click context menu on a wallpaper cell.
+    function openCellContextMenu(cell, localX, localY) {
+        root.contextMenuPath = cell.path
+        root.contextMenuCollection = cell.collectionName || ""
+        // Position roughly under the cursor; clamped by the menu when shown.
+        var mapPoint = cell.mapToItem(panel.contentItem ? panel.contentItem : root, localX, localY)
+        root.contextMenuX = mapPoint.x
+        root.contextMenuY = mapPoint.y
+        root.contextMenuVisible = true
+    }
+
+    function closeCellContextMenu() {
+        root.contextMenuVisible = false
+    }
+
+    // Menu order must match the Repeater model above: Preview, Apply, Add/Remove, Trash.
+    function activateContextMenuOption(index) {
+        var path = root.contextMenuPath
+        var collection = root.contextMenuCollection
+        root.closeCellContextMenu()
+        if (!path)
+            return
+        if (index === 0) {
+            root.openPreview({ path: path, fullPath: "", label: "", wallhavenId: "" })
+        } else if (index === 1) {
+            root.setWallpaper(path)
+        } else if (index === 2) {
+            if (collection !== "")
+                root.removeFromCollection(collection, [path])
+            else
+                root.openAddCollectionPopup(path)
+        } else if (index === 3) {
+            root.requestRemove([path])
+        }
     }
 
     function requestRemove(paths) {
@@ -660,6 +962,7 @@ Item {
     function open(payloadJson) {
         root.opened = true
         root.previewVisible = false
+        root.localTabMode = ""
         root.cancelSelection()
         root.cancelRemove()
         root.refreshCurrentBackground()
@@ -675,6 +978,7 @@ Item {
 
     function dismiss() {
         root.opened = false
+        root.contextMenuVisible = false
         if (root.shell && typeof root.shell.hide === "function")
             root.shell.hide((root.manifest && root.manifest.id) || "wallpicker.grid")
     }
@@ -747,22 +1051,123 @@ Item {
                 root.statusText = "Failed to read wallpaper folder"
                 return
             }
-            var paths = Model.parseJson(listStdout.text, [], 16777216)
-            if (!(paths instanceof Array)) {
+            var items = Model.parseJson(listStdout.text, [], 16777216)
+            if (!(items instanceof Array)) {
                 root.statusText = "Invalid wallpaper list"
                 return
             }
-            for (var i = 0; i < paths.length; i++) {
+            for (var i = 0; i < items.length; i++) {
+                var entry = items[i]
+                var p = (entry && typeof entry === "object") ? (entry.path || "") : String(entry)
+                var t = (entry && typeof entry === "object") ? (entry.thumb || "") : ""
                 imageModel.append({
-                    path: String(paths[i]),
+                    path: String(p),
+                    thumb: String(t),
                     fullPath: "",
                     wallhavenId: "",
                     label: "",
                     color: ""
                 })
             }
-            if (paths.length === 0)
+            if (items.length === 0)
                 root.statusText = "No images found in " + root.picturesDir
+            else
+                root.warmThumbnails()
+        }
+    }
+
+    // Generate any missing cached thumbnails in the background, then re-list
+    // so the grid can switch to the (much cheaper) cached versions.
+    Process {
+        id: warmThumbsProc
+        command: []
+        stdout: StdioCollector {
+            id: warmThumbsStdout
+            waitForEnd: true
+        }
+        onExited: function (code) {
+            // Relist once only if new thumbnails appeared; the second pass
+            // sees queued == 0 and stops, so this cannot loop forever.
+            if (code !== 0)
+                return
+            var payload = Model.parseJson(warmThumbsStdout.text, {}, 1048576)
+            if (payload && Number(payload.queued) > 0)
+                root.relist()
+        }
+    }
+
+    Process {
+        id: collectionsListProc
+        command: []
+        stdout: StdioCollector {
+            id: collectionsListStdout
+            waitForEnd: true
+        }
+        onExited: function (code) {
+            if (code !== 0) {
+                root.collectionsLoading = false
+                root.collectionsList = []
+                return
+            }
+            var data = Model.parseJson(collectionsListStdout.text, [], 16777216)
+            root.parseCollections(data)
+        }
+    }
+
+    Process {
+        id: collectionOpProc
+        command: []
+        stdout: StdioCollector {
+            id: collectionOpStdout
+            waitForEnd: true
+        }
+        onExited: function (code) {
+            var op = root.collectionOp
+            var name = root.collectionOpName
+            var paths = root.collectionOpPaths
+            var doAddAfter = root.pendingAddAfterCreate
+            root.collectionOp = ""
+            root.collectionOpName = ""
+            root.collectionOpPaths = []
+            root.pendingAddAfterCreate = false
+
+            if (!op)
+                return
+            var payload = Model.parseJson(collectionOpStdout.text, {}, 1048576)
+            if (code !== 0) {
+                var msg = String(collectionOpStdout.text).trim()
+                root.statusText = "Collection operation failed" + (msg ? ": " + msg : "")
+                return
+            }
+
+            // create-then-add: finish the add now that the collection exists.
+            if (op === "create" && doAddAfter && paths && paths.length > 0) {
+                root.collectionOp = "add"
+                root.collectionOpName = name
+                root.collectionOpPaths = paths
+                root.closeAddCollectionPopup()
+                root.statusText = "Adding " + paths.length + " to " + name + "…"
+                collectionOpProc.command = [root.cliPath, "collections", "add", name].concat(paths)
+                collectionOpProc.running = true
+                return
+            }
+
+            if (op === "create") {
+                root.statusText = "Created collection \"" + name + "\""
+                root.loadCollections()
+            } else if (op === "add") {
+                var added = (payload && payload.added !== undefined) ? payload.added : (paths ? paths.length : 0)
+                root.statusText = added > 0 ? "Added " + added + " to " + name : "Already in " + name
+                root.closeAddCollectionPopup()
+                root.loadCollections()
+            } else if (op === "remove") {
+                var removed = (payload && payload.removed !== undefined) ? payload.removed : 0
+                root.statusText = "Removed " + removed + " from " + name
+                root.loadCollections()
+            } else if (op === "delete") {
+                root.statusText = "Deleted collection \"" + name + "\""
+                root.loadCollections()
+            }
         }
     }
 
@@ -781,7 +1186,7 @@ Item {
                 root.removePathsFromModel(removed)
             if (root.previewVisible && removed.indexOf(root.previewImageSource) !== -1)
                 root.previewVisible = false
-            root.hoveredIndex = -1
+            root.hoveredPath = ""
             var removedCurrent = removed.indexOf(root.currentBackground) !== -1
             root.cancelSelection()
             root.pendingDeletePaths = []
@@ -798,6 +1203,9 @@ Item {
                 root.statusText = "No images left in " + root.picturesDir
             if (removedCurrent)
                 root.currentBackground = ""
+            // Collection membership was pruned by the CLI — refresh sections.
+            if (removed.length > 0 && root.localTabMode === "collections")
+                root.loadCollections()
         }
     }
 
@@ -1055,7 +1463,13 @@ Item {
             Keys.priority: Keys.BeforeItem
             Keys.onPressed: function (event) {
                 if (event.key === Qt.Key_Escape) {
-                    if (root.deleteConfirmVisible) {
+                    if (root.addCollectionPopupVisible) {
+                        root.closeAddCollectionPopup()
+                        event.accepted = true
+                    } else if (root.deleteCollectionConfirmVisible) {
+                        root.cancelDeleteCollection()
+                        event.accepted = true
+                    } else if (root.deleteConfirmVisible) {
                         root.cancelRemove()
                         event.accepted = true
                     } else if (root.previewVisible) {
@@ -1089,6 +1503,7 @@ Item {
                 anchors.top: parent.top
 
                 Text {
+                    id: headerTitle
                     text: root.showSettings ? "SETTINGS" : (root.showWallhaven ? "WALLHAVEN" : "WALLPAPERS")
                     color: root.muted
                     font.pixelSize: 11
@@ -1104,8 +1519,8 @@ Item {
                     color: root.subtle
                     font.pixelSize: 11
                     font.letterSpacing: 1
-                    anchors.left: parent.left
-                    anchors.leftMargin: 130
+                    anchors.left: headerTitle.right
+                    anchors.leftMargin: 12
                     anchors.verticalCenter: parent.verticalCenter
                     visible: !root.showSettings
                 }
@@ -1158,11 +1573,16 @@ Item {
                         root.wallhavenPage = 1
                         wallhavenModel.clear()
                         root.wallhavenEnd = false
-                        root.reload()
+                        // Keep the current local sub-tab (All / Collections).
+                        if (root.localTabMode === "collections")
+                            root.loadCollections()
+                        else
+                            root.reload()
                     }
                 }
 
                 ToolBtn {
+                    id: tabWallhavenBtn
                     width: 120
                     height: 32
                     text: "WALLHAVEN"
@@ -1174,8 +1594,45 @@ Item {
                     onClicked: {
                         root.showWallhaven = true
                         root.showSettings = false
+                        root.closeCellContextMenu()
                         root.cancelSelection()
                         root.resetWallhaven()
+                    }
+                }
+
+                // Sub-tabs for the local wallpapers area: All / Collections.
+                Item {
+                    id: localSubTabs
+                    visible: !root.showWallhaven && !root.showSettings
+                    anchors.left: tabWallhavenBtn.right
+                    anchors.leftMargin: 24
+                    anchors.verticalCenter: parent.verticalCenter
+                    height: 32
+
+                    ToolBtn {
+                        id: subTabAll
+                        anchors.left: parent.left
+                        anchors.leftMargin: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 72
+                        height: 26
+                        text: "All"
+                        tooltip: "Every wallpaper in the folder"
+                        highlighted: root.localTabMode !== "collections"
+                        onClicked: root.showLocalTab("")
+                    }
+
+                    ToolBtn {
+                        id: subTabCollections
+                        anchors.left: subTabAll.right
+                        anchors.leftMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 110
+                        height: 26
+                        text: "Collections"
+                        tooltip: "Your wallpaper collections"
+                        highlighted: root.localTabMode === "collections"
+                        onClicked: root.showLocalTab("collections")
                     }
                 }
             }
@@ -1338,6 +1795,84 @@ Item {
                 }
             }
 
+            Item {
+                id: collectionsBar
+                visible: root.localTabMode === "collections" && !root.showSettings && !root.showWallhaven
+                width: parent.width
+                height: 44
+                anchors.top: tabs.bottom
+
+                Row {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: 28
+                    anchors.rightMargin: 28
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 10
+
+                    Text {
+                        text: "NEW COLLECTION"
+                        color: root.subtle
+                        font.pixelSize: 10
+                        font.letterSpacing: 2
+                        font.weight: Font.Medium
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    TextField {
+                        id: newCollectionField
+                        width: 200
+                        height: 32
+                        placeholderText: "Name"
+                        placeholderTextColor: root.subtle
+                        color: root.fg
+                        font.pixelSize: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        background: Rectangle {
+                            radius: 6
+                            color: root.fieldBg
+                            border.width: 1
+                            border.color: newCollectionField.activeFocus ? root.accent : root.fieldBorder
+                        }
+                        onAccepted: {
+                            root.createCollection(newCollectionField.text)
+                            newCollectionField.text = ""
+                        }
+                    }
+
+                    ToolBtn {
+                        width: 84
+                        height: 32
+                        text: "Create"
+                        iconText: "\uF067"
+                        tooltip: "Create a new collection"
+                        anchors.verticalCenter: parent.verticalCenter
+                        onClicked: {
+                            root.createCollection(newCollectionField.text)
+                            newCollectionField.text = ""
+                        }
+                    }
+
+                    ToolBtn {
+                        width: 96
+                        height: 32
+                        text: "Refresh"
+                        iconText: "\uF2F1"
+                        tooltip: "Re-scan collections"
+                        anchors.verticalCenter: parent.verticalCenter
+                        onClicked: root.loadCollections()
+                    }
+
+                    Text {
+                        visible: root.collectionsLoading
+                        text: "loading…"
+                        color: root.muted
+                        font.pixelSize: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
+            }
+
             Text {
                 id: statusLabel
                 visible: root.statusText.length > 0
@@ -1346,16 +1881,16 @@ Item {
                 font.pixelSize: 12
                 height: 22
                 anchors.top: tabs.bottom
-                anchors.topMargin: wallhavenFilters.visible ? wallhavenFilters.height : 0
+                anchors.topMargin: wallhavenFilters.visible ? wallhavenFilters.height : (collectionsBar.visible ? collectionsBar.height : 0)
                 anchors.left: parent.left
                 anchors.leftMargin: 28
             }
 
             Item {
                 id: gridTab
-                visible: !root.showSettings
+                visible: !root.showSettings && (root.showWallhaven || root.localTabMode !== "collections")
                 anchors.top: tabs.bottom
-                anchors.topMargin: (wallhavenFilters.visible ? wallhavenFilters.height : 0) + (statusLabel.visible ? statusLabel.height : 0)
+                anchors.topMargin: (wallhavenFilters.visible ? wallhavenFilters.height : (collectionsBar.visible ? collectionsBar.height : 0)) + (statusLabel.visible ? statusLabel.height : 0)
                 anchors.bottom: footer.top
                 anchors.left: parent.left
                 anchors.right: parent.right
@@ -1366,6 +1901,9 @@ Item {
                     anchors.margins: 28
                     clip: true
                     boundsBehavior: Flickable.StopAtBounds
+                    cacheBuffer: 1000
+                    displayMarginBeginning: 500
+                    displayMarginEnd: 500
                     cellWidth: Math.floor(width / root.columns)
                     cellHeight: Math.floor((cellWidth - root.gridSpacing) * 9 / 16) + root.gridSpacing
                     model: root.showWallhaven ? wallhavenModel : imageModel
@@ -1374,155 +1912,10 @@ Item {
                     onWidthChanged: Qt.callLater(root.maybeLoadMoreWallhaven)
                     onHeightChanged: Qt.callLater(root.maybeLoadMoreWallhaven)
 
-                    delegate: Item {
-                        id: cell
-                        required property string path
-                        required property string fullPath
-                        required property string wallhavenId
-                        required property string label
-                        required property string color
-                        required property int index
-
-                        readonly property bool cellSelected: root.isSelected(cell.path)
-                        readonly property bool cellHighlighted: root.hoveredIndex === cell.index || cellSelected
-
-                        width: grid.cellWidth - root.gridSpacing
-                        height: grid.cellHeight - root.gridSpacing
-
-                        Rectangle {
-                            anchors.fill: parent
-                            radius: cell.cellHighlighted ? 0 : 10
-                            color: root.fieldBg
-                            border.width: cell.cellHighlighted ? 2 : 0
-                            border.color: root.accent
-                            clip: true
-
-                            Image {
-                                id: thumb
-                                anchors.fill: parent
-                                anchors.margins: cell.cellHighlighted ? 2 : 0
-                                source: root.imagePath(cell.path)
-                                fillMode: Image.PreserveAspectCrop
-                                asynchronous: true
-                                cache: true
-                                smooth: true
-
-                                Rectangle {
-                                    visible: thumb.status !== Image.Ready
-                                    anchors.fill: parent
-                                    color: "#1b1b16"
-
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: thumb.status === Image.Error ? "×" : "…"
-                                        color: root.subtle
-                                        font.pixelSize: 20
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.bottom: parent.bottom
-                                height: 26
-                                visible: cell.cellHighlighted
-                                gradient: Gradient {
-                                    GradientStop { position: 0.0; color: "#00000000" }
-                                    GradientStop { position: 1.0; color: "#c0000000" }
-                                }
-
-                                Text {
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.bottom: parent.bottom
-                                    anchors.margins: 6
-                                    anchors.rightMargin: cell.wallhavenId === "" && root.hoveredIndex === cell.index && !root.selectionMode ? 40 : 6
-                                    elide: Text.ElideMiddle
-                                    text: cell.label || root.baseName(cell.path)
-                                    color: root.fg
-                                    font.pixelSize: 11
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            visible: cell.cellSelected
-                            width: 24
-                            height: 24
-                            radius: 12
-                            color: root.accent
-                            anchors.top: parent.top
-                            anchors.left: parent.left
-                            anchors.margins: 8
-
-                            Text {
-                                anchors.centerIn: parent
-                                text: "\uF00C"
-                                color: root.bg
-                                font.family: "JetBrainsMono Nerd Font"
-                                font.pixelSize: 12
-                            }
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onEntered: root.hoveredIndex = cell.index
-                            onExited: {
-                                if (root.hoveredIndex === cell.index)
-                                    root.hoveredIndex = -1
-                            }
-                            onClicked: function (mouse) {
-                                if (root.selectionMode)
-                                    root.toggleSelected(cell.path, cell.index, mouse.modifiers)
-                                else
-                                    root.openPreview(cell)
-                            }
-
-                            Row {
-                                anchors.top: parent.top
-                                anchors.right: parent.right
-                                anchors.margins: 10
-                                spacing: 6
-                                visible: root.hoveredIndex === cell.index && !root.selectionMode
-
-                                ToolBtn {
-                                    width: 52
-                                    height: 24
-                                    text: "Apply"
-                                    tooltip: cell.wallhavenId ? "Apply this wallpaper" : "Set as wallpaper"
-                                    onClicked: {
-                                        if (cell.wallhavenId)
-                                            root.applyWallhaven(cell.wallhavenId)
-                                        else
-                                            root.setWallpaper(cell.path)
-                                    }
-                                }
-
-                                ToolBtn {
-                                    width: 78
-                                    height: 24
-                                    text: "Download"
-                                    tooltip: "Download to pictures directory (no apply)"
-                                    visible: cell.wallhavenId !== ""
-                                    onClicked: root.downloadWallhaven(cell.wallhavenId, false)
-                                }
-                            }
-
-                            ToolBtn {
-                                width: 26
-                                height: 26
-                                iconText: "\uF1F8"
-                                tooltip: "Move to Trash"
-                                visible: cell.wallhavenId === "" && root.hoveredIndex === cell.index && !root.selectionMode
-                                anchors.right: parent.right
-                                anchors.bottom: parent.bottom
-                                anchors.margins: 8
-                                onClicked: root.requestRemove([cell.path])
-                            }
-                        }
+                    delegate: WallpaperCell {
+                        // GridView injects path, fullPath, wallhavenId, label, color, thumb, index
+                        cellWidth: grid.cellWidth
+                        cellHeight: grid.cellHeight
                     }
                 }
 
@@ -1552,6 +1945,172 @@ Item {
                             var minY = grid.originY
                             var maxY = Math.max(minY, grid.originY + grid.contentHeight - grid.height)
                             grid.contentY = Math.max(minY, Math.min(maxY, newY))
+                        }
+                    }
+                }
+            }
+
+            Item {
+                id: collectionsTab
+                visible: !root.showSettings && !root.showWallhaven && root.localTabMode === "collections"
+                anchors.top: tabs.bottom
+                anchors.topMargin: (collectionsBar.visible ? collectionsBar.height : 0) + (statusLabel.visible ? statusLabel.height : 0)
+                anchors.bottom: footer.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+
+                Flickable {
+                    id: collectionsFlick
+                    anchors.fill: parent
+                    anchors.margins: 28
+                    clip: true
+                    contentWidth: width
+                    contentHeight: collectionsCol.height
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    Column {
+                        id: collectionsCol
+                        width: parent.width
+                        spacing: 14
+
+                        Text {
+                            visible: root.collectionsLoading && root.collectionsList.length === 0
+                            text: "Loading collections…"
+                            color: root.muted
+                            font.pixelSize: 13
+                            anchors.horizontalCenter: parent.horizontalCenter
+                        }
+
+                        Text {
+                            visible: !root.collectionsLoading && !root.hasUserCollections()
+                            text: "Only the built-in Omarchy Themes collection — create your own above, or right-click a wallpaper in All to file it away."
+                            color: root.subtle
+                            font.pixelSize: 11
+                            width: parent.width
+                            wrapMode: Text.Wrap
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+
+                        Repeater {
+                            model: root.collectionsList
+
+                            delegate: Rectangle {
+                                id: colSection
+                                required property var modelData
+                                width: parent.width
+                                // Grid width is deterministic: section width minus grid margins.
+                                readonly property int colGridW: parent.width - 24
+                                readonly property int colCellW: Math.floor(colGridW / Math.max(1, root.columns))
+                                readonly property int colCellH: Math.floor((colCellW - root.gridSpacing) * 9 / 16) + root.gridSpacing
+                                readonly property int colCount: root.collectionCount(modelData.name)
+                                readonly property int colRows: Math.ceil(colCount / Math.max(1, root.columns))
+                                readonly property int colBodyH: colCount === 0 ? 34 : colRows * colCellH
+                                property bool colExpanded: root.isCollectionExpanded(colSection.colName)
+                                property string colName: modelData.name
+                                property string colId: modelData.id
+
+                                height: colHeader.height + (colExpanded ? colBodyH + 24 : 0)
+                                radius: 12
+                                color: "#0e0e0b"
+                                border.width: 1
+                                border.color: "#1c1a14"
+                                clip: true
+
+                                Rectangle {
+                                    id: colHeader
+                                    width: parent.width
+                                    height: 48
+                                    anchors.top: parent.top
+                                    color: "#12120d"
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.toggleCollectionExpanded(colSection.colName)
+                                    }
+
+                                    Text {
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 16
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: colSection.colExpanded ? "▾" : "▸"
+                                        color: root.muted
+                                        font.pixelSize: 14
+                                    }
+
+                                    Text {
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 40
+                                        anchors.top: parent.top
+                                        anchors.topMargin: 10
+                                        text: modelData.name
+                                        color: root.fg
+                                        font.pixelSize: 14
+                                        font.weight: Font.Medium
+                                        elide: Text.ElideRight
+                                        width: Math.max(0, parent.width - 120)
+                                    }
+
+                                    Text {
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 40
+                                        anchors.top: parent.top
+                                        anchors.topMargin: 29
+                                        text: colSection.colCount + " wallpaper(s)" + (modelData.id === "omarchy" ? "  •  built-in" : "")
+                                        color: root.subtle
+                                        font.pixelSize: 10
+                                    }
+
+                                    Row {
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 12
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: 6
+
+                                        ToolBtn {
+                                            width: 40
+                                            height: 28
+                                            iconText: "\uF1F8"
+                                            tooltip: "Delete collection"
+                                            visible: modelData.id !== "omarchy"
+                                            onClicked: root.deleteCollection(modelData.name)
+                                        }
+                                    }
+                                }
+
+                                Item {
+                                    id: colGridArea
+                                    width: parent.width
+                                    height: colSection.colBodyH + 24
+                                    anchors.top: colHeader.bottom
+                                    visible: colSection.colExpanded
+
+                                    GridView {
+                                        id: colGrid
+                                        anchors.fill: parent
+                                        anchors.margins: 12
+                                        clip: true
+                                        interactive: false
+                                        cellWidth: colSection.colCellW
+                                        cellHeight: colSection.colCellH
+                                        model: root.gridEntriesFor(colSection.colName)
+
+                                        delegate: WallpaperCell {
+                                            cellWidth: colGrid.cellWidth
+                                            cellHeight: colGrid.cellHeight
+                                            collectionName: colSection.colName
+                                        }
+                                    }
+
+                                    Text {
+                                        visible: colSection.colCount === 0
+                                        anchors.centerIn: parent
+                                        text: "Empty collection — right-click a wallpaper in All to add one."
+                                        color: root.subtle
+                                        font.pixelSize: 11
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1818,7 +2377,7 @@ Item {
                     spacing: 8
 
                     ToolBtn {
-                        visible: !root.selectionMode
+                        visible: !root.selectionMode && root.localTabMode !== "collections"
                         width: 92
                         height: 40
                         text: "Select"
@@ -1845,6 +2404,18 @@ Item {
                         enabled: root.selectedPaths.length > 0
                         opacity: enabled ? 1 : 0.4
                         onClicked: root.requestRemove(root.selectedPaths)
+                    }
+
+                    ToolBtn {
+                        visible: root.selectionMode
+                        width: 132
+                        height: 40
+                        text: "Add to Collection"
+                        iconText: "\uF550"
+                        tooltip: "Add selected wallpapers to a collection"
+                        enabled: root.selectedPaths.length > 0
+                        opacity: enabled ? 1 : 0.4
+                        onClicked: root.openAddCollectionPopupForPaths(root.selectedPaths)
                     }
 
                     ToolBtn {
@@ -2000,6 +2571,332 @@ Item {
                                 text: "Move to Trash"
                                 highlighted: true
                                 onClicked: root.confirmRemove()
+                            }
+                        }
+                    }
+                }
+            }
+
+             Rectangle {
+                anchors.fill: parent
+                visible: root.addCollectionPopupVisible
+                color: "#99000000"
+                z: 70
+
+                MouseArea {
+                    anchors.fill: parent
+                    onWheel: function (wheel) { wheel.accepted = true }
+                    onClicked: root.closeAddCollectionPopup()
+                }
+
+                Rectangle {
+                    width: 420
+                    height: addCard.implicitHeight + 56
+                    radius: 12
+                    color: root.fieldBg
+                    border.width: 1
+                    border.color: root.fieldBorder
+                    anchors.centerIn: parent
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onWheel: function (wheel) { wheel.accepted = true }
+                    }
+
+                    Column {
+                        id: addCard
+                        anchors.fill: parent
+                        anchors.margins: 24
+                        spacing: 14
+
+                        Text {
+                            text: "Add to Collection"
+                            color: root.fg
+                            font.pixelSize: 15
+                            font.weight: Font.Medium
+                        }
+
+                        Text {
+                            text: root.popupPathCount() + " wallpaper" + (root.popupPathCount() === 1 ? "" : "s")
+                            color: root.muted
+                            font.pixelSize: 12
+                        }
+
+                        // Existing collections to add to.
+                        Text {
+                            text: "EXISTING"
+                            color: root.subtle
+                            font.pixelSize: 10
+                            font.letterSpacing: 2
+                            font.weight: Font.Medium
+                        }
+
+                        Flickable {
+                            width: parent.width
+                            height: Math.min(240, addList.height)
+                            contentHeight: addList.height
+                            boundsBehavior: Flickable.StopAtBounds
+                            clip: true
+
+                            Column {
+                                id: addList
+                                width: parent.width
+                                spacing: 6
+
+                                Repeater {
+                                    id: addListRepeater
+                                    model: (root.collectionsList || []).filter(function (c) { return c.id !== "omarchy" })
+
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        width: parent.width
+                                        height: 36
+                                        radius: 6
+                                        color: addArea.containsMouse ? "#232018" : "#100f0c"
+                                        border.width: 1
+                                        border.color: addArea.containsMouse ? root.muted : root.fieldBorder
+
+                                        Text {
+                                            anchors.left: parent.left
+                                            anchors.leftMargin: 12
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: modelData.name
+                                            color: root.fg
+                                            font.pixelSize: 12
+                                            elide: Text.ElideRight
+                                            width: parent.width - 80
+                                        }
+
+                                        Text {
+                                            anchors.right: parent.right
+                                            anchors.rightMargin: 12
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: (modelData.paths ? modelData.paths.length : 0) + ""
+                                            color: root.subtle
+                                            font.pixelSize: 11
+                                        }
+
+                                        MouseArea {
+                                            id: addArea
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: root.addPopupPathsToCollection(modelData.name)
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    width: parent.width
+                                    text: addListRepeater.count === 0 ? "No user collections yet — create one below." : ""
+                                    color: root.subtle
+                                    font.pixelSize: 11
+                                }
+                            }
+                        }
+
+                        // New collection.
+                        Text {
+                            text: "NEW COLLECTION"
+                            color: root.subtle
+                            font.pixelSize: 10
+                            font.letterSpacing: 2
+                            font.weight: Font.Medium
+                        }
+
+                        Row {
+                            width: parent.width
+                            spacing: 8
+
+                            TextField {
+                                id: newColInPopup
+                                width: parent.width - 120
+                                height: 34
+                                placeholderText: "Name"
+                                placeholderTextColor: root.subtle
+                                color: root.fg
+                                font.pixelSize: 12
+                                background: Rectangle {
+                                    radius: 6
+                                    color: root.fieldBg
+                                    border.width: 1
+                                    border.color: newColInPopup.activeFocus ? root.accent : root.fieldBorder
+                                }
+                                onAccepted: {
+                                    root.createCollectionAndAdd(newColInPopup.text,
+                                        (root.addCollectionPopupPaths.length > 0 ? root.addCollectionPopupPaths : [root.addCollectionTarget]))
+                                    newColInPopup.text = ""
+                                }
+                            }
+
+                            ToolBtn {
+                                width: 110
+                                height: 34
+                                text: "Create"
+                                iconText: "\uF067"
+                                onClicked: {
+                                    root.createCollectionAndAdd(newColInPopup.text,
+                                        (root.addCollectionPopupPaths.length > 0 ? root.addCollectionPopupPaths : [root.addCollectionTarget]))
+                                    newColInPopup.text = ""
+                                }
+                            }
+                        }
+
+                        Row {
+                            anchors.right: parent.right
+                            spacing: 10
+
+                            ToolBtn {
+                                text: "Cancel"
+                                onClicked: root.closeAddCollectionPopup()
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                anchors.fill: parent
+                visible: root.deleteCollectionConfirmVisible
+                color: "#99000000"
+                z: 70
+
+                MouseArea {
+                    anchors.fill: parent
+                    onWheel: function (wheel) { wheel.accepted = true }
+                    onClicked: root.cancelDeleteCollection()
+                }
+
+                Rectangle {
+                    width: 420
+                    height: 168
+                    radius: 12
+                    color: root.fieldBg
+                    border.width: 1
+                    border.color: root.fieldBorder
+                    anchors.centerIn: parent
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onWheel: function (wheel) { wheel.accepted = true }
+                    }
+
+                    Column {
+                        anchors.fill: parent
+                        anchors.margins: 28
+                        spacing: 18
+
+                        Text {
+                            text: "Delete Collection?"
+                            color: root.fg
+                            font.pixelSize: 15
+                            font.weight: Font.Medium
+                        }
+
+                        Text {
+                            text: "This removes the \"" + root.deleteCollectionName + "\" collection. The wallpapers themselves are NOT deleted — they stay in your folder."
+                            color: root.muted
+                            font.pixelSize: 13
+                            wrapMode: Text.Wrap
+                            width: parent.width
+                        }
+
+                        Row {
+                            anchors.right: parent.right
+                            spacing: 10
+
+                            ToolBtn {
+                                text: "Cancel"
+                                onClicked: root.cancelDeleteCollection()
+                            }
+
+                            ToolBtn {
+                                text: "Delete Collection"
+                                highlighted: true
+                                onClicked: root.confirmDeleteCollection()
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Right-click context menu for a wallpaper cell.
+            Item {
+                id: cellContextMenu
+                anchors.fill: parent
+                visible: root.contextMenuVisible
+                z: 55
+
+                // Click-away shield: swallows clicks behind the menu.
+                MouseArea {
+                    anchors.fill: parent
+                    onWheel: function (wheel) { wheel.accepted = true }
+                    onClicked: root.closeCellContextMenu()
+                }
+
+                Rectangle {
+                    id: menuCard
+                    width: Math.min(220, parent.width - 24)
+                    height: menuCol.implicitHeight + 12
+                    x: Math.max(12, Math.min(root.contextMenuX, parent.width - width - 12))
+                    y: Math.max(12, Math.min(root.contextMenuY, parent.height - height - 12))
+                    radius: 8
+                    color: "#15150f"
+                    border.width: 1
+                    border.color: root.fieldBorder
+
+                    Column {
+                        id: menuCol
+                        anchors.fill: parent
+                        anchors.margins: 6
+                        spacing: 2
+
+                        Repeater {
+                            model: [
+                                { label: "Preview", icon: "\uF06E" },
+                                { label: "Apply wallpaper", icon: "\uF04B" },
+                                { label: root.contextMenuCollection !== "" ? "Remove from \"" + root.contextMenuCollection + "\"" : "Add to collection…", icon: "\uF550" },
+                                { label: "Move to Trash", icon: "\uF1F8", danger: true }
+                            ]
+
+                            delegate: Rectangle {
+                                required property var modelData
+                                required property int index
+                                width: menuCol.width
+                                height: 32
+                                radius: 6
+                                color: optArea.containsMouse ? "#232018" : "transparent"
+
+                                Text {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 8
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 16
+                                    text: modelData.icon
+                                    color: modelData.danger ? "#c96a5a" : root.muted
+                                    font.family: "JetBrainsMono Nerd Font"
+                                    font.pixelSize: 11
+                                }
+
+                                Text {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 30
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 8
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: modelData.label
+                                    color: modelData.danger ? "#e08a7a" : root.fg
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+
+                                MouseArea {
+                                    id: optArea
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.activateContextMenuOption(index)
+                                }
                             }
                         }
                     }
@@ -2197,6 +3094,185 @@ Item {
         ToolTip.visible: btnArea.containsMouse && !btnArea.pressed && btn.tooltip.length > 0
         ToolTip.text: btn.tooltip
         ToolTip.delay: 600
+    }
+
+    // Reusable wallpaper thumbnail cell — used by the main grid and per-collection grids.
+    // `cellWidth`/`cellHeight` are the GridView cell metrics (spacing included).
+    component WallpaperCell: Item {
+        id: wpCell
+        required property string path
+        required property string fullPath
+        required property string wallhavenId
+        required property string label
+        required property string color
+        property string thumb: ""
+        property string collectionName: ""
+        required property int index
+        property int cellWidth: 200
+        property int cellHeight: 130
+
+        readonly property bool cellSelected: root.isSelected(wpCell.path)
+        readonly property bool cellHighlighted: root.hoveredPath === wpCell.path || cellSelected
+
+        width: parent ? (wpCell.cellWidth - root.gridSpacing) : wpCell.cellWidth
+        height: parent ? (wpCell.cellHeight - root.gridSpacing) : wpCell.cellHeight
+
+        // Where to show the thumbnail: cached thumb if it exists, else full image.
+        function displaySource() {
+            if (wpCell.thumb && wpCell.thumb.indexOf("file://") !== 0 && wpCell.thumb.indexOf("/") === 0)
+                return "file://" + wpCell.thumb
+            return root.imagePath(wpCell.path)
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            radius: wpCell.cellHighlighted ? 0 : 10
+            color: root.fieldBg
+            border.width: wpCell.cellHighlighted ? 2 : 0
+            border.color: root.accent
+            clip: true
+
+            Image {
+                id: thumbImage
+                anchors.fill: parent
+                anchors.margins: wpCell.cellHighlighted ? 2 : 0
+                source: wpCell.displaySource()
+                sourceSize.width: width
+                sourceSize.height: height
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                cache: true
+                smooth: true
+
+                Rectangle {
+                    visible: thumbImage.status !== Image.Ready
+                    anchors.fill: parent
+                    color: "#1b1b16"
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: thumbImage.status === Image.Error ? "×" : "…"
+                        color: root.subtle
+                        font.pixelSize: 20
+                    }
+                }
+            }
+
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: 26
+                visible: wpCell.cellHighlighted
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: "#00000000" }
+                    GradientStop { position: 1.0; color: "#c0000000" }
+                }
+
+                Text {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.margins: 6
+                    anchors.rightMargin: wpCell.wallhavenId === "" && root.hoveredPath === wpCell.path && !root.selectionMode ? 40 : 6
+                    elide: Text.ElideMiddle
+                    text: wpCell.label || root.baseName(wpCell.path)
+                    color: root.fg
+                    font.pixelSize: 11
+                }
+            }
+        }
+
+        Rectangle {
+            visible: wpCell.cellSelected
+            width: 24
+            height: 24
+            radius: 12
+            color: root.accent
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.margins: 8
+
+            Text {
+                anchors.centerIn: parent
+                text: "\uF00C"
+                color: root.bg
+                font.family: "JetBrainsMono Nerd Font"
+                font.pixelSize: 12
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            onEntered: root.hoveredPath = wpCell.path
+            onExited: {
+                if (root.hoveredPath === wpCell.path)
+                    root.hoveredPath = ""
+            }
+            onClicked: function (mouse) {
+                // Right-click is handled in onPressed — never treat it as a preview click.
+                if (mouse.button !== Qt.LeftButton)
+                    return
+                // Collection sections are read-only grids: a click always previews.
+                if (root.selectionMode && wpCell.collectionName === "")
+                    root.toggleSelected(wpCell.path, wpCell.index, mouse.modifiers)
+                else
+                    root.openPreview(wpCell)
+            }
+            onPressed: function (mouse) {
+                // Right-click on a wallpaper opens its context menu.
+                if (mouse.button === Qt.RightButton && wpCell.wallhavenId === "") {
+                    root.openCellContextMenu(wpCell, mouse.x, mouse.y)
+                    mouse.accepted = true
+                }
+            }
+
+            Row {
+                anchors.top: parent.top
+                anchors.right: parent.right
+                anchors.margins: 10
+                spacing: 6
+                visible: root.hoveredPath === wpCell.path && !root.selectionMode
+
+                ToolBtn {
+                    width: 52
+                    height: 24
+                    text: "Apply"
+                    tooltip: wpCell.wallhavenId ? "Apply this wallpaper" : "Set as wallpaper"
+                    onClicked: {
+                        if (wpCell.wallhavenId)
+                            root.applyWallhaven(wpCell.wallhavenId)
+                        else
+                            root.setWallpaper(wpCell.path)
+                    }
+                }
+
+                ToolBtn {
+                    width: 78
+                    height: 24
+                    text: "Download"
+                    tooltip: "Download to pictures directory (no apply)"
+                    visible: wpCell.wallhavenId !== ""
+                    onClicked: root.downloadWallhaven(wpCell.wallhavenId, false)
+                }
+            }
+
+            ToolBtn {
+                width: 26
+                height: 26
+                iconText: "\uF1F8"
+                tooltip: "Move to Trash"
+                visible: wpCell.wallhavenId === "" && root.hoveredPath === wpCell.path && !root.selectionMode
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.margins: 8
+                onClicked: root.requestRemove([wpCell.path])
+            }
+
+        }
     }
 
     component KeybindField: Item {
